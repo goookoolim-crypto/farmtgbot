@@ -15,6 +15,10 @@ class MaxAuthFailuresExceeded(Exception):
     """Raised when an account exhausts its auth retry budget."""
     pass
 
+class EndpointGone(Exception):
+    """Raised when an API endpoint consistently returns 404."""
+    pass
+
 class NotPx:
     MAX_AUTH_FAILURES = 50
     UpgradePaintReward = {
@@ -158,7 +162,20 @@ class NotPx:
                         response.status_code, end_point, body_preview
                     ))
                     time.sleep(5)
-                else:
+                elif response.status_code == 404:
+                    body_preview = response.text[:200].replace("\n", " ")
+                    print("[!] {}{}{}: {}HTTP 404 on {} — endpoint not found (API may have changed): {}{}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        Colors.RED, end_point, body_preview, Colors.END
+                    ))
+                    return None
+                elif response.status_code == 429:
+                    print("[!] {}{}{}: {}HTTP 429 on {} — rate limited, sleeping 30s{}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        Colors.YELLOW, end_point, Colors.END
+                    ))
+                    time.sleep(30)
+                elif response.status_code in (401, 403):
                     self._auth_failures += 1
                     body_preview = response.text[:200].replace("\n", " ")
                     print("[!] {}{}{}: HTTP {} on {} (auth fail #{}): {}".format(
@@ -185,6 +202,13 @@ class NotPx:
                     })
                     print("[+] Authorization re-applied from stored init_data")
                     time.sleep(2)
+                else:
+                    body_preview = response.text[:200].replace("\n", " ")
+                    print("[!] {}{}{}: {}HTTP {} on {} (unexpected client error): {}{}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        Colors.RED, response.status_code, end_point, body_preview, Colors.END
+                    ))
+                    return None
 
             except (requests.exceptions.ConnectionError,
                     urllib3.exceptions.NewConnectionError,
@@ -196,7 +220,10 @@ class NotPx:
             continue
 
     def claim_mining(self):
-        return self.request("get","/mining/claim","claimed")['claimed']
+        resp = self.request("get","/mining/claim","claimed")
+        if resp is None:
+            return 0
+        return resp['claimed']
 
     def accountStatus(self):
         return self.request("get","/mining/status","speedPerSecond")
@@ -206,22 +233,37 @@ class NotPx:
         random_pixel = (random.randint(100,990) * 1000) + random.randint(100,990)
         data = {"pixelId":random_pixel,"newColor":random.choice(colors)}
 
-        return self.request("post","/repaint/start","balance",data)['balance']
+        resp = self.request("post","/repaint/start","balance",data)
+        if resp is None:
+            return 0
+        return resp['balance']
     
     def paintPixel(self,x,y,hex_color):
         pixelformated = (y * 1000) + x + 1
         data = {"pixelId":pixelformated,"newColor":hex_color}
 
-        return self.request("post","/repaint/start","balance",data)['balance']
+        resp = self.request("post","/repaint/start","balance",data)
+        if resp is None:
+            return 0
+        return resp['balance']
 
     def upgrade_paintreward(self):
-        return self.request("get","/mining/boost/check/paintReward","paintReward")['paintReward']
+        resp = self.request("get","/mining/boost/check/paintReward","paintReward")
+        if resp is None:
+            return False
+        return resp['paintReward']
     
     def upgrade_energyLimit(self):
-        return self.request("get","/mining/boost/check/energyLimit","energyLimit")['energyLimit']
+        resp = self.request("get","/mining/boost/check/energyLimit","energyLimit")
+        if resp is None:
+            return False
+        return resp['energyLimit']
     
     def upgrade_reChargeSpeed(self):
-        return self.request("get","/mining/boost/check/reChargeSpeed","reChargeSpeed")['reChargeSpeed']
+        resp = self.request("get","/mining/boost/check/reChargeSpeed","reChargeSpeed")
+        if resp is None:
+            return False
+        return resp['reChargeSpeed']
     
 class Colors:
     """ ANSI color codes """
@@ -278,9 +320,22 @@ def painter(NotPxClient:NotPx,session_name:str):
         try:
             user_status = NotPxClient.accountStatus()
             if not user_status:
-                time.sleep(5)
+                consecutive_failures = getattr(NotPxClient, '_api_down_count', 0) + 1
+                NotPxClient._api_down_count = consecutive_failures
+                if consecutive_failures >= 5:
+                    print("[!!] {}{}{}: {}API appears to be down or endpoints have changed. Painter thread exiting after {} consecutive failures.{}".format(
+                        Colors.CYAN, session_name, Colors.END,
+                        Colors.RED, consecutive_failures, Colors.END
+                    ))
+                    return
+                print("[!] {}{}{}: {}Failed to get account status (attempt {}/5). Sleeping 30s...{}".format(
+                    Colors.CYAN, session_name, Colors.END,
+                    Colors.YELLOW, consecutive_failures, Colors.END
+                ))
+                time.sleep(30)
                 continue
             else:
+                NotPxClient._api_down_count = 0
                 charges = user_status.get('charges', 0)
                 boosts = user_status.get('boosts', {})
                 levels_recharge = boosts.get('reChargeSpeed', 0) + 1
@@ -358,9 +413,22 @@ def mine_claimer(NotPxClient: NotPx, session_name: str):
             acc_data = NotPxClient.accountStatus()
             
             if acc_data is None:
-                print("[!] {}{}{}: {}Failed to retrieve account status. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
-                time.sleep(5)
+                consecutive_failures = getattr(NotPxClient, '_claimer_api_down_count', 0) + 1
+                NotPxClient._claimer_api_down_count = consecutive_failures
+                if consecutive_failures >= 5:
+                    print("[!!] {}{}{}: {}API appears to be down or endpoints have changed. Claimer thread exiting after {} consecutive failures.{}".format(
+                        Colors.CYAN, session_name, Colors.END,
+                        Colors.RED, consecutive_failures, Colors.END
+                    ))
+                    return
+                print("[!] {}{}{}: {}Failed to retrieve account status (attempt {}/5). Sleeping 30s...{}".format(
+                    Colors.CYAN, session_name, Colors.END,
+                    Colors.YELLOW, consecutive_failures, Colors.END
+                ))
+                time.sleep(30)
                 continue
+            else:
+                NotPxClient._claimer_api_down_count = 0
             
             if 'fromStart' in acc_data and 'speedPerSecond' in acc_data:
                 fromStart = acc_data['fromStart']
