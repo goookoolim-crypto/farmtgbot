@@ -42,63 +42,62 @@ class Blum:
 
     async def main(self):
         await asyncio.sleep(random.randint(*config.ACC_DELAY))
-        while True:
-            try:
-                login = await self.login()
-                if login == False:
-                    await self.session.close()
+        try:
+            while True:
+                try:
+                    login = await self.login()
+                    if login == False:
+                        return 0
+                    logger.info(f"main | Thread {self.thread} | {self.name} | Start! | PROXY : {self.proxy}")
+                except Exception as err:
+                    logger.error(f"main | Thread {self.thread} | {self.name} | {err}")
                     return 0
-                logger.info(f"main | Thread {self.thread} | {self.name} | Start! | PROXY : {self.proxy}")
-            except Exception as err:
-                logger.error(f"main | Thread {self.thread} | {self.name} | {err}")
-                await self.session.close()
-                return 0
-                
-            try:
-                valid = await self.is_token_valid()
-                if not valid:
-                    logger.warning(f"main | Thread {self.thread} | {self.name} | Token is invalid. Refreshing token...")
-                    await self.refresh()
-                await asyncio.sleep(random.randint(*config.MINI_SLEEP))
-                
-                await self.claim_diamond()
-                await asyncio.sleep(random.randint(*config.MINI_SLEEP))
-                
-                timestamp, start_time, end_time = await self.balance()
-                
-                await self.get_referral_info()
-                await asyncio.sleep(random.randint(*config.MINI_SLEEP))
-                
-                if config.DO_TASKS:
-                    await self.do_tasks()
+                    
+                try:
+                    valid = await self.is_token_valid()
+                    if not valid:
+                        logger.warning(f"main | Thread {self.thread} | {self.name} | Token is invalid. Refreshing token...")
+                        await self.refresh()
                     await asyncio.sleep(random.randint(*config.MINI_SLEEP))
-                
-                if config.SPEND_DIAMONDS and 5 == 4:
-                    diamonds_balance = await self.get_diamonds_balance()
-                    logger.info(f"main | Thread {self.thread} | {self.name} | Have {diamonds_balance} diamonds!")
-                    games_count = random.randint(*config.MAX_GAMES_COUNT)
-                    logger.info(f"main | Thread {self.thread} | {self.name} | Starting play {min(games_count, diamonds_balance)} games...")
-                    for _ in range(min(games_count, diamonds_balance)):
-                        await self.game()
-                        await asyncio.sleep(random.randint(*config.SLEEP_GAME_TIME))
-                        
-                if start_time is None and end_time is None:
-                    await self.start()
-                    logger.info(f"main | Thread {self.thread} | {self.name} | Start farming!")
-                elif start_time is not None and end_time is not None and timestamp >= end_time:
-                    timestamp, balance = await self.claim()
-                    logger.success(f"main | Thread {self.thread} | {self.name} | Claimed reward! Balance: {balance}")
-                
-                await self.session.close()
-                logger.info(f"main | Thread {self.thread} | {self.name} | All activities in blum completed")
-                return 0
-            except Exception as err:
-                logger.error(f"main | Thread {self.thread} | {self.name} | Error log: {err}")
-                await asyncio.sleep(52)
-                self.error_cnt += 1
-                if (self.error_cnt >= config.ERRORS_BEFORE_STOP):
-                    await self.session.close()
+                    
+                    await self.claim_diamond()
+                    await asyncio.sleep(random.randint(*config.MINI_SLEEP))
+                    
+                    timestamp, start_time, end_time = await self.balance()
+                    
+                    await self.get_referral_info()
+                    await asyncio.sleep(random.randint(*config.MINI_SLEEP))
+                    
+                    if config.DO_TASKS:
+                        await self.do_tasks()
+                        await asyncio.sleep(random.randint(*config.MINI_SLEEP))
+                    
+                    if config.SPEND_DIAMONDS and 5 == 4:
+                        diamonds_balance = await self.get_diamonds_balance()
+                        logger.info(f"main | Thread {self.thread} | {self.name} | Have {diamonds_balance} diamonds!")
+                        games_count = random.randint(*config.MAX_GAMES_COUNT)
+                        logger.info(f"main | Thread {self.thread} | {self.name} | Starting play {min(games_count, diamonds_balance)} games...")
+                        for _ in range(min(games_count, diamonds_balance)):
+                            await self.game()
+                            await asyncio.sleep(random.randint(*config.SLEEP_GAME_TIME))
+                            
+                    if start_time is None and end_time is None:
+                        await self.start()
+                        logger.info(f"main | Thread {self.thread} | {self.name} | Start farming!")
+                    elif start_time is not None and end_time is not None and timestamp >= end_time:
+                        timestamp, balance = await self.claim()
+                        logger.success(f"main | Thread {self.thread} | {self.name} | Claimed reward! Balance: {balance}")
+                    
+                    logger.info(f"main | Thread {self.thread} | {self.name} | All activities in blum completed")
                     return 0
+                except Exception as err:
+                    logger.error(f"main | Thread {self.thread} | {self.name} | Error log: {err}")
+                    await asyncio.sleep(52)
+                    self.error_cnt += 1
+                    if (self.error_cnt >= config.ERRORS_BEFORE_STOP):
+                        return 0
+        finally:
+            await self.session.close()
 
 
     async def claim(self):
@@ -108,10 +107,11 @@ class Blum:
             if 'message' in resp_json:
                 if not (await self.is_token_valid()):
                     await self.refresh()
-                return 0
-            return int(resp_json.get("timestamp")/1000), resp_json.get("availableBalance")
-        except:
-            pass
+                return 0, "0"
+            return int(resp_json.get("timestamp", 0)/1000), resp_json.get("availableBalance", "0")
+        except Exception as e:
+            logger.error(f"claim | Thread {self.thread} | {self.name} | {e}")
+            return 0, "0"
 
     async def start(self):
         try:
@@ -121,8 +121,9 @@ class Blum:
                 if not (await self.is_token_valid()):
                     await self.refresh()
                 return 0
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"start | Thread {self.thread} | {self.name} | {e}")
+            return 0
         
     async def balance(self):
         try:
@@ -133,21 +134,32 @@ class Blum:
                 if not (await self.is_token_valid()):
                     await self.refresh()
             timestamp = resp_json.get("timestamp")
+            if timestamp is None:
+                return 0, None, None
             if resp_json.get("farming"):
                 start_time = resp_json.get("farming").get("startTime")
                 end_time = resp_json.get("farming").get("endTime")
                 return int(timestamp/1000), int(start_time/1000), int(end_time/1000)
             return int(timestamp), None, None
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"balance | Thread {self.thread} | {self.name} | {e}")
+            return 0, None, None
 
     async def login(self):
         try:
             json_data = {"query": self.init_data}
             resp = await self.session.post("https://user-domain.blum.codes/api/v1/auth/provider/PROVIDER_TELEGRAM_MINI_APP", json=json_data)
             resp = await resp.json()
-            self.ref_token = resp.get("token").get("refresh")
-            self.session.headers['Authorization'] = "Bearer " + (resp).get("token").get("access")
+            token_data = resp.get("token")
+            if not token_data:
+                logger.error(f"login | Thread {self.thread} | {self.name} | No token in response: {str(resp)[:200]}")
+                return False
+            self.ref_token = token_data.get("refresh", "")
+            access = token_data.get("access", "")
+            if not access:
+                logger.error(f"login | Thread {self.thread} | {self.name} | No access token in response")
+                return False
+            self.session.headers['Authorization'] = "Bearer " + access
             return True
         except Exception as err:
             logger.error(f"login | Thread {self.thread} | {self.name} | {err}")

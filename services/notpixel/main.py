@@ -108,6 +108,12 @@ class NotPx:
         self._auth_failures = 0
         self.__update_headers()
 
+    def close(self):
+        try:
+            self.session.close()
+        except Exception:
+            pass
+
     def __update_headers(self):
         self.session.headers = {
             'Accept': 'application/json, text/plain, */*',
@@ -267,18 +273,20 @@ print(r"""{}
 
 def painter(NotPxClient:NotPx,session_name:str):
     print("[+] {}Auto painting started{}.".format(Colors.CYAN,Colors.END))
-    while True:
+    try:
+      while True:
         try:
             user_status = NotPxClient.accountStatus()
             if not user_status:
                 time.sleep(5)
                 continue
             else:
-                charges = user_status['charges']
-                levels_recharge = user_status['boosts']['reChargeSpeed'] + 1
-                levels_paintreward = user_status['boosts']['paintReward'] + 1
-                levels_energylimit = user_status['boosts']['energyLimit'] + 1
-                user_balance = user_status['userBalance']
+                charges = user_status.get('charges', 0)
+                boosts = user_status.get('boosts', {})
+                levels_recharge = boosts.get('reChargeSpeed', 0) + 1
+                levels_paintreward = boosts.get('paintReward', 0) + 1
+                levels_energylimit = boosts.get('energyLimit', 0) + 1
+                user_balance = user_status.get('userBalance', 0)
 
             if levels_recharge - 1 < config.RE_CHARGE_SPEED_MAX and NotPx.UpgradeReChargeSpeed[levels_recharge]['Price'] <= user_balance:
                 status = NotPxClient.upgrade_reChargeSpeed()
@@ -336,13 +344,16 @@ def painter(NotPxClient:NotPx,session_name:str):
                     Colors.RED,Colors.END
                 ))
             time.sleep(5)
+    finally:
+        NotPxClient.close()
         
         
 def mine_claimer(NotPxClient: NotPx, session_name: str):
     time.sleep(5)
 
     print("[+] {}Auto claiming started{}.".format(Colors.CYAN, Colors.END))
-    while True:
+    try:
+      while True:
         try:
             acc_data = NotPxClient.accountStatus()
             
@@ -371,6 +382,8 @@ def mine_claimer(NotPxClient: NotPx, session_name: str):
                 Colors.RED, e, Colors.END
             ))
             return
+    finally:
+        NotPxClient.close()
 
 def multithread_starter():
     data_file = 'data.txt'

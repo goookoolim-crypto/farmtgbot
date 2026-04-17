@@ -66,6 +66,9 @@ class Tomartod:
             self.log(f"{merah}failed fetch token authorization, check http.log !")
             return None
         data = res.json().get("data")
+        if not isinstance(data, dict):
+            self.log(f"{merah}failed fetch token authorization, no data in response !")
+            return None
         token = data.get("access_token")
         if token is None:
             self.log(f"{merah}failed fetch token authorization, check http.log !")
@@ -81,6 +84,9 @@ class Tomartod:
             return False
 
         data = res.json().get("data")
+        if not isinstance(data, dict) or "end_at" not in data:
+            self.log(f"{merah}failed start farming, unexpected response !")
+            return False
         end_farming = data["end_at"]
         format_end_farming = (
             datetime.fromtimestamp(end_farming).isoformat(" ").split(".")[0]
@@ -95,7 +101,12 @@ class Tomartod:
             self.log(f"{merah}failed start farming, check http.log last line !")
             return False
 
-        poin = res.json()["data"]["claim_this_time"]
+        resp_json = res.json()
+        data = resp_json.get("data") if isinstance(resp_json, dict) else None
+        if not isinstance(data, dict) or "claim_this_time" not in data:
+            self.log(f"{merah}failed claim farming, unexpected response !")
+            return False
+        poin = data["claim_this_time"]
         self.log(f"{hijau}success claim farming !")
         self.log(f"{hijau}reward : {putih}{poin}")
 
@@ -153,8 +164,11 @@ class Tomartod:
                 self.log(f"{merah}failed get data !")
                 return None
 
-            timestamp = data["timestamp"]
-            balance = data["available_balance"]
+            timestamp = data.get("timestamp")
+            balance = data.get("available_balance", 0)
+            if timestamp is None:
+                self.log(f"{merah}failed get timestamp !")
+                return None
             self.log(f"{hijau}balance : {putih}{balance}")
             if "daily" not in data.keys():
                 self.daily_claim()
@@ -164,7 +178,7 @@ class Tomartod:
                 self.daily_claim()
                 continue
 
-            next_daily = data["daily"]["next_check_ts"]
+            next_daily = data["daily"].get("next_check_ts", 0)
             if timestamp > next_daily:
                 self.daily_claim()
 
@@ -173,7 +187,10 @@ class Tomartod:
                 result = self.start_farming()
                 continue
 
-            end_farming = data["farming"]["end_at"]
+            end_farming = data["farming"].get("end_at")
+            if end_farming is None:
+                self.log(f"{merah}farming data missing end_at !")
+                return None
             format_end_farming = (
                 datetime.fromtimestamp(end_farming).isoformat(" ").split(".")[0]
             )

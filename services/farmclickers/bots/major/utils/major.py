@@ -56,15 +56,17 @@ class Major:
                 try:
                     login = await self.login()
                     if login == False:
-                        await self.session.close()
                         return 0
                     logger.info(f"main | Thread {self.thread} | {self.name} | Start! | PROXY : {self.proxy}")
                 except Exception as err:
                     logger.error(f"main | Thread {self.thread} | {self.name} | {err}")
-                    await self.session.close()
                     return 0
 
                 user = await self.user()
+                if not isinstance(user, dict):
+                    logger.error(f"main | Thread {self.thread} | {self.name} | Unexpected user response: {str(user)[:200]}")
+                    await asyncio.sleep(52)
+                    continue
                 await asyncio.sleep(random.uniform(*config.MINI_SLEEP))
                 if random.randint(0,3) == 0 and config.JOIN_SQUAD:
                     if user['squad_id'] == None:
@@ -134,7 +136,6 @@ class Major:
                     await game()
                     await asyncio.sleep(random.uniform(*config.GAME_SLEEP))
 
-                await self.session.close()
                 logger.info(f"main | Thread {self.thread} | {self.name} | All activities in major completed")
                 return 0
             except Exception as err:
@@ -142,8 +143,10 @@ class Major:
                 await asyncio.sleep(52)
                 self.error_cnt += 1
                 if (self.error_cnt >= config.ERRORS_BEFORE_STOP):
-                    await self.session.close()
                     return 0
+            finally:
+                if hasattr(self, 'session') and self.session:
+                    await self.session.close()
 
     async def play_swipe_coin(self):
         resp = await self.session.get("https://major.bot/api/swipe_coin/")
@@ -236,7 +239,11 @@ class Major:
             json_data = {"init_data": self.init_data}
             resp = await self.session.post("https://major.bot/api/auth/tg/", json=json_data)
             resp = await resp.json()
-            self.session.headers['authorization'] = f"Bearer {resp['access_token']}"
+            access_token = resp.get('access_token') if isinstance(resp, dict) else None
+            if not access_token:
+                logger.error(f"login | Thread {self.thread} | {self.name} | No access_token in response: {str(resp)[:200]}")
+                return False
+            self.session.headers['authorization'] = f"Bearer {access_token}"
             return True
         except Exception as err:
             logger.error(f"login | Thread {self.thread} | {self.name} | {err}")
