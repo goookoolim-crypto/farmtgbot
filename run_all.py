@@ -21,7 +21,9 @@ Enable/disable a service with env flags:
 
 from __future__ import annotations
 
+import collections
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -32,6 +34,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SERVICES = ROOT / "services"
 DATA_VOLUME = Path(os.environ.get("DATA_VOLUME", "/data"))
+START_TIME = time.time()
+HEARTBEAT_INTERVAL_SEC = int(os.environ.get("HEARTBEAT_INTERVAL_SEC", "600"))
 
 COLORS = {
     "farmclickers": "\033[36m",  # cyan
@@ -47,6 +51,125 @@ def log(tag: str, msg: str) -> None:
     reset = COLORS["reset"]
     sys.stdout.write(f"{color}[{tag}]{reset} {msg}\n")
     sys.stdout.flush()
+
+
+def fmt_uptime(seconds: float) -> str:
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+# ---------------------------------------------------------------------------
+# Startup self-diagnostic
+# ---------------------------------------------------------------------------
+
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+# Env vars we want visible in the startup banner (presence only, never values).
+_ENV_KEYS_SHOW_VALUE = {"ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
+                        "FARMCLICKERS_SESSION_NAME", "NOTPIXEL_SESSION_NAME",
+                        "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME"}
+_ENV_KEYS_WATCH = [
+    "API_ID", "API_HASH",
+    "FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME",
+    "NOTPIXEL_SESSION_B64", "NOTPIXEL_SESSION_NAME",
+    "TOMARKET_DATA",
+    "ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
+    "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME",
+]
+
+
+def describe_env_var(key: str, value: str) -> str:
+    if not value:
+        return "unset"
+    if key in _ENV_KEYS_SHOW_VALUE:
+        return f"SET = {value}"
+    if key.endswith("_B64"):
+        return f"SET ({len(value)} chars of base64)"
+    if key == "TOMARKET_DATA":
+        nlines = len([l for l in value.splitlines() if l.strip()])
+        return f"SET ({nlines} non-empty line(s), {len(value)} chars total)"
+    if key == "API_ID":
+        return f"SET = {value}"
+    # API_HASH etc - show presence + length only.
+    return f"SET ({len(value)} chars)"
+
+
+def inspect_session_file(path: Path) -> str:
+    """Return a short human description of a .session file's validity."""
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return f"stat error: {e}"
+    if size == 0:
+        return "0 bytes (EMPTY)"
+    try:
+        with open(path, "rb") as f:
+            header = f.read(16)
+    except OSError as e:
+        return f"{size} bytes, read error: {e}"
+    if header.startswith(SQLITE_MAGIC):
+        return f"{size} bytes, SQLite OK"
+    # Pyrogram <2 used pickle-style sessions; telethon always uses SQLite.
+    return f"{size} bytes, UNKNOWN FORMAT (header={header!r})"
+
+
+def startup_diagnostic() -> None:
+    log("launcher", "=" * 60)
+    log("launcher", f"farmtgbot launcher starting at {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    log("launcher", f"Python:   {sys.version.split()[0]}")
+    log("launcher", f"Platform: {platform.platform()}")
+    log("launcher", f"CWD:      {os.getcwd()}")
+    log("launcher", f"ROOT:     {ROOT}")
+    log("launcher", "Env vars (presence only; values hidden for secrets):")
+    for key in _ENV_KEYS_WATCH:
+        value = os.environ.get(key, "")
+        log("launcher", f"  {key}: {describe_env_var(key, value)}")
+    log("launcher", "=" * 60)
+
+
+def session_inventory() -> None:
+    """Print the state of each service's on-disk session/data files.
+
+    Runs after materialize_farmclickers_env() + link_persistent_data() so it
+    shows the final state the subprocesses will see.
+    """
+    log("launcher", "Session / data inventory:")
+
+    for svc_name, sessions_dir in [
+        ("farmclickers", SERVICES / "farmclickers" / "sessions"),
+        ("notpixel", SERVICES / "notpixel" / "sessions"),
+    ]:
+        if not sessions_dir.exists():
+            log("launcher", f"  {svc_name}: sessions dir MISSING at {sessions_dir.relative_to(ROOT)}")
+            continue
+        session_files = sorted(sessions_dir.glob("*.session"))
+        if not session_files:
+            log("launcher", f"  {svc_name}: 0 session files in {sessions_dir.relative_to(ROOT)}")
+            continue
+        for s in session_files:
+            log("launcher", f"  {svc_name}: {s.name} \u2192 {inspect_session_file(s)}")
+
+    # tomarketod: data.txt lines + tokens.json existence
+    data_txt = SERVICES / "tomarketod" / "data.txt"
+    if data_txt.exists():
+        try:
+            lines = [l for l in data_txt.read_text().splitlines() if l.strip()]
+            log("launcher", f"  tomarketod: data.txt has {len(lines)} non-empty line(s)")
+        except OSError as e:
+            log("launcher", f"  tomarketod: data.txt read error: {e}")
+    else:
+        log("launcher", "  tomarketod: data.txt MISSING")
+    tokens_json = SERVICES / "tomarketod" / "tokens.json"
+    if tokens_json.exists():
+        log("launcher", f"  tomarketod: tokens.json present ({tokens_json.stat().st_size} bytes)")
+    else:
+        log("launcher", "  tomarketod: tokens.json MISSING (will be created on first run)")
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +376,8 @@ def link_persistent_data() -> None:
 # ---------------------------------------------------------------------------
 
 class Service:
+    CRASH_TAIL_LINES = 15  # how many recent lines to replay on crash
+
     def __init__(self, tag: str, cwd: Path, cmd: list[str], extra_env: dict[str, str] | None = None):
         self.tag = tag
         self.cwd = cwd
@@ -260,6 +385,12 @@ class Service:
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
         self.stop_requested = False
+        # Lifecycle tracking (read by heartbeat thread).
+        self.run_started_at: float | None = None
+        self.last_exit_at: float | None = None
+        self.last_exit_rc: int | None = None
+        self.restart_count = 0
+        self.recent_lines: collections.deque[str] = collections.deque(maxlen=self.CRASH_TAIL_LINES)
 
     def _stream(self, stream) -> None:
         for raw in iter(stream.readline, b""):
@@ -267,6 +398,7 @@ class Service:
                 line = raw.decode("utf-8", errors="replace").rstrip()
             except Exception:
                 line = repr(raw)
+            self.recent_lines.append(line)
             log(self.tag, line)
         stream.close()
 
@@ -277,7 +409,8 @@ class Service:
             env.update(self.extra_env)
             # Disable python output buffering so logs stream line-by-line.
             env.setdefault("PYTHONUNBUFFERED", "1")
-            log(self.tag, f"starting: {' '.join(self.cmd)} (cwd={self.cwd.relative_to(ROOT)})")
+            attempt_label = "starting" if self.restart_count == 0 else f"restart #{self.restart_count}"
+            log(self.tag, f"{attempt_label}: {' '.join(self.cmd)} (cwd={self.cwd.relative_to(ROOT)})")
             try:
                 self.proc = subprocess.Popen(
                     self.cmd,
@@ -292,15 +425,33 @@ class Service:
                 time.sleep(60)
                 continue
 
+            self.run_started_at = time.time()
+            self.recent_lines.clear()
+            log(self.tag, f"pid={self.proc.pid} started at {time.strftime('%H:%M:%S')}")
+
             assert self.proc.stdout is not None
             self._stream(self.proc.stdout)
             rc = self.proc.wait()
+
+            self.last_exit_at = time.time()
+            self.last_exit_rc = rc
+            uptime = self.last_exit_at - (self.run_started_at or self.last_exit_at)
+
             if self.stop_requested:
-                log(self.tag, f"exited (rc={rc}) after stop requested")
+                log(self.tag, f"exited (rc={rc}) after stop requested, ran for {fmt_uptime(uptime)}")
                 return
-            log(self.tag, f"exited (rc={rc}) - restarting in {backoff}s")
+
+            self.restart_count += 1
+            log(self.tag, f"exited (rc={rc}) after {fmt_uptime(uptime)} - restart #{self.restart_count} in {backoff}s")
+            if self.recent_lines:
+                log(self.tag, f"--- last {len(self.recent_lines)} line(s) before exit ---")
+                for line in list(self.recent_lines):
+                    log(self.tag, f"    | {line}")
+                log(self.tag, "--- end tail ---")
+
             time.sleep(backoff)
             backoff = min(backoff * 2, 300)
+        self.run_started_at = None
 
     def terminate(self) -> None:
         self.stop_requested = True
@@ -309,6 +460,14 @@ class Service:
                 self.proc.terminate()
             except ProcessLookupError:
                 pass
+
+    def status_line(self) -> str:
+        now = time.time()
+        if self.run_started_at and self.proc and self.proc.poll() is None:
+            return f"{self.tag}: RUNNING pid={self.proc.pid} uptime={fmt_uptime(now - self.run_started_at)} restarts={self.restart_count}"
+        if self.last_exit_at:
+            return f"{self.tag}: DOWN last_rc={self.last_exit_rc} {fmt_uptime(now - self.last_exit_at)} ago, restarts={self.restart_count}"
+        return f"{self.tag}: pending start (restarts={self.restart_count})"
 
 
 def build_services() -> list[Service]:
@@ -345,17 +504,31 @@ def build_services() -> list[Service]:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def heartbeat_loop(services: list[Service], stop_event: threading.Event) -> None:
+    """Periodically print per-service status. Helps spot silent stalls."""
+    if HEARTBEAT_INTERVAL_SEC <= 0:
+        return
+    while not stop_event.wait(HEARTBEAT_INTERVAL_SEC):
+        launcher_uptime = fmt_uptime(time.time() - START_TIME)
+        log("launcher", f"heartbeat: launcher_uptime={launcher_uptime}")
+        for svc in services:
+            log("launcher", f"  {svc.status_line()}")
+
+
 def main() -> int:
+    startup_diagnostic()
     log("launcher", "farmtgbot: unified multi-bot Railway worker starting")
     api_id, api_hash = require_env()
     materialize_farmclickers_env(api_id, api_hash)
     link_persistent_data()
+    session_inventory()
 
     services = build_services()
     if not services:
         log("launcher", "FATAL: all services disabled. Set at least one ENABLE_* env var to 1.")
         return 1
     log("launcher", f"enabled services: {[s.tag for s in services]}")
+    log("launcher", f"heartbeat interval: {HEARTBEAT_INTERVAL_SEC}s (set HEARTBEAT_INTERVAL_SEC=0 to disable)")
 
     threads: list[threading.Thread] = []
     for svc in services:
@@ -364,6 +537,12 @@ def main() -> int:
         threads.append(t)
 
     shutting_down = threading.Event()
+
+    hb_thread = threading.Thread(
+        target=heartbeat_loop, args=(services, shutting_down),
+        name="heartbeat", daemon=True,
+    )
+    hb_thread.start()
 
     def handle_signal(signum, _frame):
         log("launcher", f"received signal {signum}, terminating services")

@@ -101,6 +101,8 @@ class NotPx:
         if config.USE_PROXY:
             self.session.proxies = config.PROXIES
         self.session_name = session_name
+        # Consecutive auth-renewal counter (verbose diagnostics when NotPixel keeps rejecting us).
+        self._auth_failures = 0
         self.__update_headers()
 
     def __update_headers(self):
@@ -133,13 +135,43 @@ class NotPx:
                 print("[x] {}NotPixel internal error. Wait 5 minutes...{}".format(Colors.RED, Colors.END))
                 time.sleep(5 * 60)
             elif response.status_code == 200:
+                if self._auth_failures:
+                    print("[+] {}{}{}: recovered after {} auth failure(s){}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        self._auth_failures, Colors.END
+                    ))
+                    self._auth_failures = 0
                 if key_check in response.text:
                     return response.json()  # Return the JSON response
                 else:
                     raise Exception(report_bug_text.format(response.text))
             elif response.status_code >= 500:
+                body_preview = response.text[:200].replace("\n", " ")
+                print("[!] {}{}{}: HTTP {} on {} (server-side): {}".format(
+                    Colors.CYAN, self.session_name, Colors.END,
+                    response.status_code, end_point, body_preview
+                ))
                 time.sleep(5)
             else:
+                # 4xx: log status + truncated body so we can see WHY NotPixel is rejecting us.
+                self._auth_failures += 1
+                body_preview = response.text[:200].replace("\n", " ")
+                print("[!] {}{}{}: HTTP {} on {} (auth fail #{}): {}".format(
+                    Colors.CYAN, self.session_name, Colors.END,
+                    response.status_code, end_point, self._auth_failures, body_preview
+                ))
+                if self._auth_failures == 5:
+                    print("[!!] {}{}{}: {}5 consecutive auth failures. Most likely your Telegram account has never opened NotPixel. Go to t.me/notpixel on your phone and tap Launch to register.{}".format(
+                        Colors.CYAN, self.session_name, Colors.END, Colors.YELLOW, Colors.END
+                    ))
+                if self._auth_failures >= 10:
+                    # Exponential-ish backoff so we don't spam the logs or NotPixel's API.
+                    backoff = min(300, 10 * (self._auth_failures - 9))
+                    print("[!!] {}{}{}: {}{} consecutive auth failures, sleeping {}s before next retry{}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        Colors.YELLOW, self._auth_failures, backoff, Colors.END
+                    ))
+                    time.sleep(backoff)
                 nloop = asyncio.new_event_loop()
                 asyncio.set_event_loop(nloop)
                 client = TelegramClient(self.session_name,config.API_ID,config.API_HASH,loop=nloop).start()

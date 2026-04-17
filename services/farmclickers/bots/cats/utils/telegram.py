@@ -88,10 +88,10 @@ class Accounts:
                     if await client.connect():
                         valid_sessions.append(session)
                     else:
-                        logger.error(f"{session}.session is invalid")
+                        logger.error(f"{session}.session is invalid (connect returned False)")
                     await client.disconnect()
-                except:
-                    logger.error(f"{session}.session is invalid")
+                except Exception as e:
+                    logger.error(f"{session}.session is invalid: {type(e).__name__}: {e}")
             logger.success(
                 f"Valid sessions: {len(valid_sessions)}; Invalid: {len(sessions)-len(valid_sessions)}"
             )

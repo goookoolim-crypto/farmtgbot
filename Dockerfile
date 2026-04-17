@@ -29,7 +29,8 @@ RUN mkdir -p services/farmclickers/sessions \
              services/notpixel/sessions \
              services/tomarketod \
  && touch services/tomarketod/data.txt \
-          services/tomarketod/proxies.txt
+          services/tomarketod/proxies.txt \
+ && echo '{}' > services/tomarketod/tokens.json
 
 # Railway sets PORT but we are a worker; we simply ignore it.
 CMD ["python3.11", "run_all.py"]
