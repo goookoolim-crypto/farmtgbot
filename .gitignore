@@ -1,0 +1,42 @@
+# --- secrets & sessions (NEVER commit) ---
+.env
+*.env
+!*.env.example
+!.env-example
+
+# Pyrogram / Telethon session DBs (full account access!)
+*.session
+*.session-journal
+**/sessions/
+**/sessions-backup/
+
+# Tomarketod user data
+services/tomarketod/data.txt
+services/tomarketod/proxies.txt
+services/tomarketod/tokens.json
+services/farmclickers/proxies.txt
+services/farmclickers/proxy.txt
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- virtualenvs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDE / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp

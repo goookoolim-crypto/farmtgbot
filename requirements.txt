@@ -1,0 +1,24 @@
+# Aggregated requirements for all 3 services. Installed once at Docker build.
+# Pins taken from farmclickers (strictest); compatible with notpixel + tomarketod.
+
+# --- farmclickers (pyrogram + pydantic stack) ---
+pyrogram==2.0.106
+tgcrypto==1.2.5
+loguru==0.7.2
+aiohttp==3.9.5
+fake-useragent==1.5.1
+requests[socks]==2.28.1
+aiohttp_socks==0.8.4
+python-dotenv==1.0.1
+pydantic==2.8.2
+pydantic-settings==2.3.4
+pydantic_core==2.20.1
+better-proxy==1.1.5
+aiohttp-proxy==0.1.2
+
+# --- notpixel (telethon) ---
+telethon>=1.37.0
+urllib3>=1.26.12
+
+# --- tomarketod ---
+colorama>=0.4.6
