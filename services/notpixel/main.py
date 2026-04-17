@@ -11,7 +11,12 @@ import os
 report_bug_text = "If you have done all the steps correctly and you think this is a bug, report it to github.com/aDarkDev with response. response: {}"
 authenticate_error = "Please follow the steps correctly. Not authenticated."
 
+class MaxAuthFailuresExceeded(Exception):
+    """Raised when an account exhausts its auth retry budget."""
+    pass
+
 class NotPx:
+    MAX_AUTH_FAILURES = 50
     UpgradePaintReward = {
         2: {
             "Price": 5,
@@ -120,67 +125,69 @@ class NotPx:
         }
 
     def request(self, method, end_point, key_check, data=None):
-        try:
-            if method == "get":
-                response = self.session.get(f"https://notpx.app/api/v1{end_point}", timeout=5)
-            else:
-                response = self.session.post(f"https://notpx.app/api/v1{end_point}", timeout=5, json=data)
-            if "failed to parse" in response.text:
-                print("[x] {}NotPixel internal error. Wait 5 minutes...{}".format(Colors.RED, Colors.END))
-                time.sleep(5 * 60)
-            elif response.status_code == 200:
-                if self._auth_failures:
-                    print("[+] {}{}{}: recovered after {} auth failure(s){}".format(
-                        Colors.CYAN, self.session_name, Colors.END,
-                        self._auth_failures, Colors.END
-                    ))
-                    self._auth_failures = 0
-                if key_check in response.text:
-                    return response.json()
+        while True:
+            try:
+                if method == "get":
+                    response = self.session.get(f"https://notpx.app/api/v1{end_point}", timeout=5)
                 else:
-                    raise Exception(report_bug_text.format(response.text))
-            elif response.status_code >= 500:
-                body_preview = response.text[:200].replace("\n", " ")
-                print("[!] {}{}{}: HTTP {} on {} (server-side): {}".format(
-                    Colors.CYAN, self.session_name, Colors.END,
-                    response.status_code, end_point, body_preview
-                ))
-                time.sleep(5)
-            else:
-                self._auth_failures += 1
-                body_preview = response.text[:200].replace("\n", " ")
-                print("[!] {}{}{}: HTTP {} on {} (auth fail #{}): {}".format(
-                    Colors.CYAN, self.session_name, Colors.END,
-                    response.status_code, end_point, self._auth_failures, body_preview
-                ))
-                if self._auth_failures == 5:
-                    print("[!!] {}{}{}: {}5 consecutive auth failures. Most likely your Telegram account has never opened NotPixel. Go to t.me/notpixel on your phone and tap Launch to register.{}".format(
-                        Colors.CYAN, self.session_name, Colors.END, Colors.YELLOW, Colors.END
-                    ))
-                if self._auth_failures >= 10:
-                    backoff = min(300, 10 * (self._auth_failures - 9))
-                    print("[!!] {}{}{}: {}{} consecutive auth failures, sleeping {}s before next retry{}".format(
+                    response = self.session.post(f"https://notpx.app/api/v1{end_point}", timeout=5, json=data)
+                if "failed to parse" in response.text:
+                    print("[x] {}NotPixel internal error. Wait 5 minutes...{}".format(Colors.RED, Colors.END))
+                    time.sleep(5 * 60)
+                elif response.status_code == 200:
+                    if self._auth_failures:
+                        print("[+] {}{}{}: recovered after {} auth failure(s){}".format(
+                            Colors.CYAN, self.session_name, Colors.END,
+                            self._auth_failures, Colors.END
+                        ))
+                        self._auth_failures = 0
+                    if key_check in response.text:
+                        return response.json()
+                    else:
+                        raise Exception(report_bug_text.format(response.text))
+                elif response.status_code >= 500:
+                    body_preview = response.text[:200].replace("\n", " ")
+                    print("[!] {}{}{}: HTTP {} on {} (server-side): {}".format(
                         Colors.CYAN, self.session_name, Colors.END,
-                        Colors.YELLOW, self._auth_failures, backoff, Colors.END
+                        response.status_code, end_point, body_preview
                     ))
-                    time.sleep(backoff)
-                self.session.headers.update({
-                    "Authorization": "initData " + self.init_data
-                })
-                print("[+] Authorization re-applied from stored init_data")
-                time.sleep(2)
-        
-        except requests.exceptions.ConnectionError:
-            print("[!] {}ConnectionError{} {}. Sleeping for 5s...".format(Colors.RED, Colors.END, end_point))
-            time.sleep(5)
-        except urllib3.exceptions.NewConnectionError:
-            print("[!] {}NewConnectionError{} {}. Sleeping for 5s...".format(Colors.RED, Colors.END, end_point))
-            time.sleep(5)
-        except requests.exceptions.Timeout:
-            print("[!] {}Timeout Error{} {}. Sleeping for 5s...".format(Colors.RED, Colors.END, end_point))
-            time.sleep(5)
-        
-        return self.request(method, end_point, key_check, data)
+                    time.sleep(5)
+                else:
+                    self._auth_failures += 1
+                    body_preview = response.text[:200].replace("\n", " ")
+                    print("[!] {}{}{}: HTTP {} on {} (auth fail #{}): {}".format(
+                        Colors.CYAN, self.session_name, Colors.END,
+                        response.status_code, end_point, self._auth_failures, body_preview
+                    ))
+                    if self._auth_failures == 5:
+                        print("[!!] {}{}{}: {}5 consecutive auth failures. Most likely your Telegram account has never opened NotPixel. Go to t.me/notpixel on your phone and tap Launch to register.{}".format(
+                            Colors.CYAN, self.session_name, Colors.END, Colors.YELLOW, Colors.END
+                        ))
+                    if self._auth_failures >= 10:
+                        backoff = min(300, 10 * (self._auth_failures - 9))
+                        print("[!!] {}{}{}: {}{} consecutive auth failures, sleeping {}s before next retry{}".format(
+                            Colors.CYAN, self.session_name, Colors.END,
+                            Colors.YELLOW, self._auth_failures, backoff, Colors.END
+                        ))
+                        time.sleep(backoff)
+                    if self._auth_failures >= self.MAX_AUTH_FAILURES:
+                        raise MaxAuthFailuresExceeded(
+                            f"{self.session_name}: {self._auth_failures} consecutive auth failures, giving up"
+                        )
+                    self.session.headers.update({
+                        "Authorization": "initData " + self.init_data
+                    })
+                    print("[+] Authorization re-applied from stored init_data")
+                    time.sleep(2)
+
+            except (requests.exceptions.ConnectionError,
+                    urllib3.exceptions.NewConnectionError,
+                    requests.exceptions.Timeout) as exc:
+                label = type(exc).__name__
+                print("[!] {}{}{} {}. Sleeping for 5s...".format(Colors.RED, label, Colors.END, end_point))
+                time.sleep(5)
+
+            continue
 
     def claim_mining(self):
         return self.request("get","/mining/claim","claimed")['claimed']
@@ -305,6 +312,12 @@ def painter(NotPxClient:NotPx,session_name:str):
                     Colors.YELLOW,Colors.END
                 ))
                 time.sleep(600)
+        except MaxAuthFailuresExceeded as e:
+            print("[!!] {}{}{}: {}{}{}. Painter thread exiting.".format(
+                Colors.CYAN, session_name, Colors.END,
+                Colors.RED, e, Colors.END
+            ))
+            return
         except requests.exceptions.ConnectionError:
             print("[!] {}{}{}: {}ConnectionError{}. Sleeping for 5s...".format(
                     Colors.CYAN,session_name,Colors.END,
@@ -330,27 +343,34 @@ def mine_claimer(NotPxClient: NotPx, session_name: str):
 
     print("[+] {}Auto claiming started{}.".format(Colors.CYAN, Colors.END))
     while True:
-        acc_data = NotPxClient.accountStatus()
-        
-        if acc_data is None:
-            print("[!] {}{}{}: {}Failed to retrieve account status. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
-            time.sleep(5)
-            continue
-        
-        if 'fromStart' in acc_data and 'speedPerSecond' in acc_data:
-            fromStart = acc_data['fromStart']
-            speedPerSecond = acc_data['speedPerSecond']
-            if fromStart * speedPerSecond > 0.3:
-                claimed_count = round(NotPxClient.claim_mining(), 2)
-                print("[+] {}{}{}: {} NotPx Token {}claimed{}.".format(
-                    Colors.CYAN, session_name, Colors.END,
-                    claimed_count, Colors.GREEN, Colors.END
-                ))
-        else:
-            print("[!] {}{}{}: {}Unexpected account data format. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
-        
-        print("[!] {}{}{}: Sleeping for 1 hour...".format(Colors.CYAN, session_name, Colors.END))
-        time.sleep(3600)
+        try:
+            acc_data = NotPxClient.accountStatus()
+            
+            if acc_data is None:
+                print("[!] {}{}{}: {}Failed to retrieve account status. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
+                time.sleep(5)
+                continue
+            
+            if 'fromStart' in acc_data and 'speedPerSecond' in acc_data:
+                fromStart = acc_data['fromStart']
+                speedPerSecond = acc_data['speedPerSecond']
+                if fromStart * speedPerSecond > 0.3:
+                    claimed_count = round(NotPxClient.claim_mining(), 2)
+                    print("[+] {}{}{}: {} NotPx Token {}claimed{}.".format(
+                        Colors.CYAN, session_name, Colors.END,
+                        claimed_count, Colors.GREEN, Colors.END
+                    ))
+            else:
+                print("[!] {}{}{}: {}Unexpected account data format. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
+            
+            print("[!] {}{}{}: Sleeping for 1 hour...".format(Colors.CYAN, session_name, Colors.END))
+            time.sleep(3600)
+        except MaxAuthFailuresExceeded as e:
+            print("[!!] {}{}{}: {}{}{}. Claimer thread exiting.".format(
+                Colors.CYAN, session_name, Colors.END,
+                Colors.RED, e, Colors.END
+            ))
+            return
 
 def multithread_starter():
     data_file = 'data.txt'
