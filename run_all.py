@@ -396,30 +396,49 @@ class Service:
         return f"{self.tag}: pending start (restarts={self.restart_count})"
 
 
+def _data_nonempty(path: Path) -> bool:
+    try:
+        return path.exists() and any(l.strip() for l in path.read_text().splitlines())
+    except OSError:
+        return False
+
+
 def build_services() -> list[Service]:
     services: list[Service] = []
 
     if os.environ.get("ENABLE_FARMCLICKERS", "1") == "1":
-        services.append(Service(
-            tag="farmclickers",
-            cwd=SERVICES / "farmclickers",
-            cmd=["python3.11", "main.py", "-a", "2"],
-        ))
+        data_path = SERVICES / "farmclickers" / "data.txt"
+        if _data_nonempty(data_path):
+            services.append(Service(
+                tag="farmclickers",
+                cwd=SERVICES / "farmclickers",
+                cmd=["python3.11", "main.py", "-a", "2"],
+            ))
+        else:
+            log("launcher", "farmclickers: SKIPPED - data.txt empty/missing. Set FARMCLICKERS_DATA env var with init_data tokens (one per line) and redeploy.")
 
     if os.environ.get("ENABLE_NOTPIXEL", "1") == "1":
-        services.append(Service(
-            tag="notpixel",
-            cwd=SERVICES / "notpixel",
-            cmd=["python3.11", "main.py"],
-            extra_env={"NOTPIXEL_AUTOSTART": "1"},
-        ))
+        data_path = SERVICES / "notpixel" / "data.txt"
+        if _data_nonempty(data_path):
+            services.append(Service(
+                tag="notpixel",
+                cwd=SERVICES / "notpixel",
+                cmd=["python3.11", "main.py"],
+                extra_env={"NOTPIXEL_AUTOSTART": "1"},
+            ))
+        else:
+            log("launcher", "notpixel: SKIPPED - data.txt empty/missing. Set NOTPIXEL_DATA env var with init_data tokens (one per line) and redeploy.")
 
     if os.environ.get("ENABLE_TOMARKETOD", "1") == "1":
-        services.append(Service(
-            tag="tomarketod",
-            cwd=SERVICES / "tomarketod",
-            cmd=["python3.11", "bot.py", "--marinkitagawa"],
-        ))
+        data_path = SERVICES / "tomarketod" / "data.txt"
+        if _data_nonempty(data_path):
+            services.append(Service(
+                tag="tomarketod",
+                cwd=SERVICES / "tomarketod",
+                cmd=["python3.11", "bot.py", "--marinkitagawa"],
+            ))
+        else:
+            log("launcher", "tomarketod: SKIPPED - data.txt empty/missing. Set TOMARKET_DATA env var with init_data tokens (one per line) and redeploy.")
 
     return services
 
@@ -448,7 +467,7 @@ def main() -> int:
 
     services = build_services()
     if not services:
-        log("launcher", "FATAL: all services disabled. Set at least one ENABLE_* env var to 1.")
+        log("launcher", "FATAL: no services to run. Either all ENABLE_* flags are 0, or every enabled service has an empty data.txt. Set at least one of FARMCLICKERS_DATA / NOTPIXEL_DATA / TOMARKET_DATA with init_data tokens and redeploy.")
         return 1
     log("launcher", f"enabled services: {[s.tag for s in services]}")
     log("launcher", f"heartbeat interval: {HEARTBEAT_INTERVAL_SEC}s (set HEARTBEAT_INTERVAL_SEC=0 to disable)")

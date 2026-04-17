@@ -18,10 +18,17 @@ async def process():
         print("File .env not found, read README!")
         return
 
+    autonomous = (startAction is not None)
     while True:
-        if (startAction != None): 
+        if (startAction != None):
             action = startAction
             startAction = None
+        elif autonomous:
+            # In autonomous mode (-a flag), exit once the action completes
+            # instead of prompting for input (which would EOFError on a
+            # non-interactive TTY like Railway/Docker and spam restarts).
+            print("Autonomous action completed, exiting.")
+            return
         else: action = int(input("Select an action:\n1 -> Instructions for adding accounts\n2 -> Launch software\n3 -> Launch software from a specific bot\n4 -> Exit\n"))
 
         if (action == 1):
