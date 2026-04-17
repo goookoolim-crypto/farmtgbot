@@ -173,12 +173,13 @@ def materialize_farmclickers_env(api_id: str, api_hash: str) -> None:
 
 def materialize_sessions_from_env() -> None:
     import base64
+    import gzip
 
     entries = [
-        ("FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME", SERVICES / "farmclickers" / "sessions", "newone", ".session", True),
-        ("NOTPIXEL_SESSION_B64",     "NOTPIXEL_SESSION_NAME",     SERVICES / "notpixel"     / "sessions", "newone", ".session", True),
+        ("FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME", SERVICES / "farmclickers" / "sessions", "newone", ".session"),
+        ("NOTPIXEL_SESSION_B64",     "NOTPIXEL_SESSION_NAME",     SERVICES / "notpixel"     / "sessions", "newone", ".session"),
     ]
-    for env_b64, env_name, dest_dir, default_name, ext, is_b64 in entries:
+    for env_b64, env_name, dest_dir, default_name, ext in entries:
         blob = os.environ.get(env_b64, "").strip()
         if not blob:
             continue
@@ -189,12 +190,19 @@ def materialize_sessions_from_env() -> None:
             log("launcher", f"  {target.relative_to(ROOT)} already exists - not overwriting from env")
             continue
         try:
-            data = base64.b64decode(blob) if is_b64 else blob.encode()
+            raw = base64.b64decode(blob)
         except Exception as e:
-            log("launcher", f"  FAILED to decode {env_b64}: {e}")
+            log("launcher", f"  FAILED to base64-decode {env_b64}: {e}")
             continue
+        # Try gzip first (the format we generate locally). Fall back to raw bytes for backward compat.
+        try:
+            data = gzip.decompress(raw)
+            source = "gzip+b64"
+        except OSError:
+            data = raw
+            source = "b64 (uncompressed)"
         target.write_bytes(data)
-        log("launcher", f"  wrote {target.relative_to(ROOT)} ({len(data)} bytes) from {env_b64}")
+        log("launcher", f"  wrote {target.relative_to(ROOT)} ({len(data)} bytes) from {env_b64} [{source}]")
 
     # Tomarket token is plain text, can contain multiple lines for multiple accounts.
     tomarket_data = os.environ.get("TOMARKET_DATA", "").strip()
