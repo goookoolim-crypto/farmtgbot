@@ -40,3 +40,9 @@ ENV/
 .idea/
 .vscode/
 *.swp
+
+# --- local-only bootstrap helpers (contain hardcoded credentials) ---
+bootstrap_sessions.py
+bootstrap_env.py
+_bootstrap_env.py
+print_railway_vars.py

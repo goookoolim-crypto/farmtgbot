@@ -153,17 +153,67 @@ def materialize_farmclickers_env(api_id: str, api_hash: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Link persistent data from the Railway volume into each service dir.
-# Expected volume layout (user uploads manually after first deploy):
-#   /data/farmclickers/sessions/*.session   -> pyrogram sessions (blum/major)
-#   /data/notpixel/sessions/*.session       -> telethon sessions (notpixel)
-#   /data/tomarketod/data.txt               -> one WebApp init_data per line
-#   /data/tomarketod/proxies.txt            -> optional
+# Materialize session/data files from env vars.
+#
+# Railway has no built-in way to copy files into a container. Instead we
+# base64-encode the .session files locally and set them as env vars. Sessions
+# are ~28 KB each; base64 pushes that to ~37 KB; Railway's per-var limit is
+# 64 KB so we fit comfortably.
+#
+# Expected env vars (all optional - missing ones just skip that service):
+#   FARMCLICKERS_SESSION_B64   base64 of pyrogram .session file
+#   FARMCLICKERS_SESSION_NAME  filename stem, default "newone"
+#   NOTPIXEL_SESSION_B64       base64 of telethon .session file
+#   NOTPIXEL_SESSION_NAME      filename stem, default "newone"
+#   TOMARKET_DATA              raw init_data token (one line per account, \n-separated)
+#
+# Fallback: if a /data volume is mounted, we symlink from there instead
+# (kept for users who prefer volumes over env vars).
 # ---------------------------------------------------------------------------
 
+def materialize_sessions_from_env() -> None:
+    import base64
+
+    entries = [
+        ("FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME", SERVICES / "farmclickers" / "sessions", "newone", ".session", True),
+        ("NOTPIXEL_SESSION_B64",     "NOTPIXEL_SESSION_NAME",     SERVICES / "notpixel"     / "sessions", "newone", ".session", True),
+    ]
+    for env_b64, env_name, dest_dir, default_name, ext, is_b64 in entries:
+        blob = os.environ.get(env_b64, "").strip()
+        if not blob:
+            continue
+        name = (os.environ.get(env_name, "") or default_name).strip()
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        target = dest_dir / f"{name}{ext}"
+        if target.exists():
+            log("launcher", f"  {target.relative_to(ROOT)} already exists - not overwriting from env")
+            continue
+        try:
+            data = base64.b64decode(blob) if is_b64 else blob.encode()
+        except Exception as e:
+            log("launcher", f"  FAILED to decode {env_b64}: {e}")
+            continue
+        target.write_bytes(data)
+        log("launcher", f"  wrote {target.relative_to(ROOT)} ({len(data)} bytes) from {env_b64}")
+
+    # Tomarket token is plain text, can contain multiple lines for multiple accounts.
+    tomarket_data = os.environ.get("TOMARKET_DATA", "").strip()
+    if tomarket_data:
+        target = SERVICES / "tomarketod" / "data.txt"
+        if target.exists() and target.read_text().strip():
+            log("launcher", f"  {target.relative_to(ROOT)} already populated - not overwriting from TOMARKET_DATA")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(tomarket_data + "\n")
+            log("launcher", f"  wrote {target.relative_to(ROOT)} from TOMARKET_DATA ({len(tomarket_data.splitlines()) or 1} line(s))")
+
+
 def link_persistent_data() -> None:
+    # Primary path: env vars (see materialize_sessions_from_env).
+    materialize_sessions_from_env()
+
+    # Optional fallback: /data volume symlinks.
     if not DATA_VOLUME.exists():
-        log("launcher", f"No persistent volume at {DATA_VOLUME} - using in-container files. Sessions will be lost on redeploy!")
         return
     log("launcher", f"Persistent volume found at {DATA_VOLUME}")
 
@@ -176,7 +226,6 @@ def link_persistent_data() -> None:
     ]
     for src, dst in mappings:
         if not src.exists():
-            log("launcher", f"  skip: {src} not present")
             continue
         if dst.exists() or dst.is_symlink():
             if dst.is_symlink():
