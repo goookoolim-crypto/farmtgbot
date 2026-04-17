@@ -21,7 +21,9 @@ Enable/disable a service with env flags:
 
 from __future__ import annotations
 
+import base64
 import collections
+import gzip
 import os
 import platform
 import signal
@@ -69,11 +71,14 @@ def fmt_uptime(seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 _ENV_KEYS_SHOW_VALUE = {"ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
-                        "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME"}
+                        "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME",
+                        "FARMCLICKERS_SESSION_NAME", "NOTPIXEL_SESSION_NAME"}
 _ENV_KEYS_WATCH = [
     "API_ID", "API_HASH",
     "FARMCLICKERS_DATA",
+    "FARMCLICKERS_SESSION_NAME", "FARMCLICKERS_SESSION_B64",
     "NOTPIXEL_DATA",
+    "NOTPIXEL_SESSION_NAME", "NOTPIXEL_SESSION_B64",
     "TOMARKET_DATA",
     "ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
     "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME",
@@ -130,6 +135,18 @@ def session_inventory() -> None:
         log("launcher", f"  tomarketod: tokens.json present ({tokens_json.stat().st_size} bytes)")
     else:
         log("launcher", "  tomarketod: tokens.json MISSING (will be created on first run)")
+
+    for svc_name, sessions_dir in [
+        ("farmclickers", SERVICES / "farmclickers" / "sessions"),
+        ("notpixel", SERVICES / "notpixel" / "sessions"),
+    ]:
+        if sessions_dir.exists():
+            session_files = list(sessions_dir.glob("*.session"))
+            if session_files:
+                for sf in session_files:
+                    log("launcher", f"  {svc_name}: session {sf.name} ({sf.stat().st_size} bytes)")
+            else:
+                log("launcher", f"  {svc_name}: sessions/ dir exists but no .session files")
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +286,31 @@ def materialize_data_from_env() -> None:
             log("launcher", f"  wrote {target.relative_to(ROOT)} from {env_key} ({nlines} line(s))")
 
 
+def materialize_sessions_from_env() -> None:
+    """Decode and write Pyrogram session files from *_SESSION_NAME + *_SESSION_B64 env vars."""
+    session_mappings = [
+        ("FARMCLICKERS", SERVICES / "farmclickers" / "sessions"),
+        ("NOTPIXEL",     SERVICES / "notpixel"     / "sessions"),
+    ]
+    for prefix, sessions_dir in session_mappings:
+        name = os.environ.get(f"{prefix}_SESSION_NAME", "").strip()
+        b64_data = os.environ.get(f"{prefix}_SESSION_B64", "").strip()
+        if not name or not b64_data:
+            continue
+        try:
+            raw = base64.b64decode(b64_data)
+            session_bytes = gzip.decompress(raw)
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            target = sessions_dir / f"{name}.session"
+            target.write_bytes(session_bytes)
+            log("launcher", f"  wrote {target.relative_to(ROOT)} from {prefix}_SESSION_B64 ({len(session_bytes)} bytes)")
+        except Exception as e:
+            log("launcher", f"  WARNING: failed to materialize {prefix} session: {e}")
+
+
 def link_persistent_data() -> None:
     materialize_data_from_env()
+    materialize_sessions_from_env()
 
     if not DATA_VOLUME.exists():
         return
@@ -344,7 +384,6 @@ class Service:
                     env=env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    bufsize=1,
                 )
             except FileNotFoundError as e:
                 log(self.tag, f"FATAL: {e}. Sleeping 60s before retry.")
