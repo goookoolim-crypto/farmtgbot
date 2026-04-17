@@ -1,9 +1,8 @@
-from telethon.sync import TelegramClient, functions
-from urllib.parse import unquote
+from urllib.parse import unquote, parse_qs
 import threading
 import requests
 import urllib3
-import asyncio
+import json
 import random
 import config
 import time
@@ -11,14 +10,6 @@ import os
 
 report_bug_text = "If you have done all the steps correctly and you think this is a bug, report it to github.com/aDarkDev with response. response: {}"
 authenticate_error = "Please follow the steps correctly. Not authenticated."
-
-async def GetWebAppData(client):
-    notcoin = await client.get_entity("notpixel")
-    msg = await client(functions.messages.RequestWebViewRequest(notcoin,notcoin,platform="android",url="https://notpx.app/"))
-    webappdata_global = msg.url.split('https://notpx.app/#tgWebAppData=')[1].replace("%3D","=").split('&tgWebAppVersion=')[0].replace("%26","&")
-    user_data = webappdata_global.split("&user=")[1].split("&auth")[0]
-    webappdata_global = webappdata_global.replace(user_data,unquote(user_data))
-    return webappdata_global
 
 class NotPx:
     UpgradePaintReward = {
@@ -96,23 +87,27 @@ class NotPx:
         }
     }
 
-    def __init__(self,session_name:str) -> None:
+    def __init__(self, init_data: str) -> None:
         self.session = requests.Session()
         if config.USE_PROXY:
             self.session.proxies = config.PROXIES
-        self.session_name = session_name
-        # Consecutive auth-renewal counter (verbose diagnostics when NotPixel keeps rejecting us).
+        self.init_data = init_data
+
+        try:
+            parsed = {k: v[0] for k, v in parse_qs(init_data).items()}
+            user_info = json.loads(parsed.get('user', '{}'))
+            self.session_name = user_info.get('first_name', 'unknown')
+        except Exception:
+            self.session_name = 'unknown'
+
         self._auth_failures = 0
         self.__update_headers()
 
     def __update_headers(self):
-        client = TelegramClient(self.session_name,config.API_ID,config.API_HASH).start()
-        WebAppQuery = client.loop.run_until_complete(GetWebAppData(client))
-        client.disconnect()
         self.session.headers = {
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Authorization': f'initData {WebAppQuery}',
+            'Authorization': f'initData {self.init_data}',
             'Priority': 'u=1, i',
             'Referer': 'https://notpx.app/',
             'Sec-Ch-Ua': 'Chromium;v=119, Not?A_Brand;v=24',
@@ -130,7 +125,6 @@ class NotPx:
                 response = self.session.get(f"https://notpx.app/api/v1{end_point}", timeout=5)
             else:
                 response = self.session.post(f"https://notpx.app/api/v1{end_point}", timeout=5, json=data)
-            # Handle notpixel heavyload error
             if "failed to parse" in response.text:
                 print("[x] {}NotPixel internal error. Wait 5 minutes...{}".format(Colors.RED, Colors.END))
                 time.sleep(5 * 60)
@@ -142,7 +136,7 @@ class NotPx:
                     ))
                     self._auth_failures = 0
                 if key_check in response.text:
-                    return response.json()  # Return the JSON response
+                    return response.json()
                 else:
                     raise Exception(report_bug_text.format(response.text))
             elif response.status_code >= 500:
@@ -153,7 +147,6 @@ class NotPx:
                 ))
                 time.sleep(5)
             else:
-                # 4xx: log status + truncated body so we can see WHY NotPixel is rejecting us.
                 self._auth_failures += 1
                 body_preview = response.text[:200].replace("\n", " ")
                 print("[!] {}{}{}: HTTP {} on {} (auth fail #{}): {}".format(
@@ -165,22 +158,16 @@ class NotPx:
                         Colors.CYAN, self.session_name, Colors.END, Colors.YELLOW, Colors.END
                     ))
                 if self._auth_failures >= 10:
-                    # Exponential-ish backoff so we don't spam the logs or NotPixel's API.
                     backoff = min(300, 10 * (self._auth_failures - 9))
                     print("[!!] {}{}{}: {}{} consecutive auth failures, sleeping {}s before next retry{}".format(
                         Colors.CYAN, self.session_name, Colors.END,
                         Colors.YELLOW, self._auth_failures, backoff, Colors.END
                     ))
                     time.sleep(backoff)
-                nloop = asyncio.new_event_loop()
-                asyncio.set_event_loop(nloop)
-                client = TelegramClient(self.session_name,config.API_ID,config.API_HASH,loop=nloop).start()
-                WebAppQuery = nloop.run_until_complete(GetWebAppData(client))
-                client.disconnect()
                 self.session.headers.update({
-                    "Authorization":"initData " + WebAppQuery
+                    "Authorization": "initData " + self.init_data
                 })
-                print("[+] Authentication renewed!")
+                print("[+] Authorization re-applied from stored init_data")
                 time.sleep(2)
         
         except requests.exceptions.ConnectionError:
@@ -202,7 +189,6 @@ class NotPx:
         return self.request("get","/mining/status","speedPerSecond")
 
     def autoPaintPixel(self):
-        # making pixel randomly
         colors = [ "#FFFFFF" , "#000000" , "#00CC78" , "#BE0039" ]
         random_pixel = (random.randint(100,990) * 1000) + random.randint(100,990)
         data = {"pixelId":random_pixel,"newColor":random.choice(colors)}
@@ -225,7 +211,6 @@ class NotPx:
         return self.request("get","/mining/boost/check/reChargeSpeed","reChargeSpeed")['reChargeSpeed']
     
 class Colors:
-    # Source: https://gist.github.com/rene-d/9e584a7dd2935d0f461904b9f2950007
     """ ANSI color codes """
     BLACK = "\033[0;30m"
     RED = "\033[0;31m"
@@ -251,13 +236,11 @@ class Colors:
     NEGATIVE = "\033[7m"
     CROSSED = "\033[9m"
     END = "\033[0m"
-    # cancel SGR codes if we don't write to a terminal
     if not __import__("sys").stdout.isatty():
         for _ in dir():
             if isinstance(_, str) and _[0] != "_":
                 locals()[_] = ""
     else:
-        # set Windows console in VT mode
         if __import__("platform").system() == "Windows":
             kernel32 = __import__("ctypes").windll.kernel32
             kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
@@ -343,19 +326,17 @@ def painter(NotPxClient:NotPx,session_name:str):
         
         
 def mine_claimer(NotPxClient: NotPx, session_name: str):
-    time.sleep(5)  # start with delay...
+    time.sleep(5)
 
     print("[+] {}Auto claiming started{}.".format(Colors.CYAN, Colors.END))
     while True:
         acc_data = NotPxClient.accountStatus()
         
-        # Check if acc_data is None
         if acc_data is None:
             print("[!] {}{}{}: {}Failed to retrieve account status. Retrying...{}".format(Colors.CYAN, session_name, Colors.END, Colors.RED, Colors.END))
-            time.sleep(5)  # Wait before retrying
+            time.sleep(5)
             continue
         
-        # Check if the necessary keys exist in acc_data
         if 'fromStart' in acc_data and 'speedPerSecond' in acc_data:
             fromStart = acc_data['fromStart']
             speedPerSecond = acc_data['speedPerSecond']
@@ -372,50 +353,48 @@ def mine_claimer(NotPxClient: NotPx, session_name: str):
         time.sleep(3600)
 
 def multithread_starter():
-    dirs = os.listdir("sessions/")
-    sessions = list(filter(lambda x: x.endswith(".session"),dirs))
-    sessions = list(map(lambda x: x.split(".session")[0],sessions))
-    for session_name in sessions:
+    data_file = 'data.txt'
+    if not os.path.exists(data_file):
+        print(f'[x] {Colors.RED}data.txt not found!{Colors.END}')
+        return
+    datas = [line.strip() for line in open(data_file).readlines() if line.strip()]
+    if not datas:
+        print(f'[x] {Colors.RED}0 accounts in data.txt{Colors.END}')
+        return
+    for idx, init_data in enumerate(datas):
         try:
-            cli = NotPx("sessions/"+session_name)
-            threading.Thread(target=painter,args=[cli,session_name]).start()
-            threading.Thread(target=mine_claimer,args=[cli,session_name]).start()
+            session_name = f'account_{idx+1}'
+            cli = NotPx(init_data)
+            threading.Thread(target=painter, args=[cli, session_name]).start()
+            threading.Thread(target=mine_claimer, args=[cli, session_name]).start()
         except Exception as e:
-            print("[!] {}Error on load session{} \"{}\", error: {}".format(Colors.RED,Colors.END,session_name,e))
+            print(f'[!] {Colors.RED}Error on account {idx+1}{Colors.END}: {e}')
 
-# start script
 if __name__ == "__main__":
-    if not os.path.exists("sessions"):
-        os.mkdir("sessions")
-
-    # Headless autostart: if NOTPIXEL_AUTOSTART=1 and sessions exist, skip prompt and go straight to option 2.
     autostart = os.environ.get("NOTPIXEL_AUTOSTART", "0") == "1"
-    existing_sessions = [f for f in os.listdir("sessions/") if f.endswith(".session")]
     if autostart:
-        if not existing_sessions:
-            print("[x] {}NOTPIXEL_AUTOSTART=1 but no sessions found in sessions/. Exiting.{}".format(Colors.RED, Colors.END))
+        if not os.path.exists('data.txt') or not [l for l in open('data.txt').readlines() if l.strip()]:
+            print(f'[x] {Colors.RED}NOTPIXEL_AUTOSTART=1 but no data in data.txt{Colors.END}')
             raise SystemExit(1)
-        print("[+] {}NOTPIXEL_AUTOSTART=1{} - starting mine+claim with {} session(s)".format(Colors.GREEN, Colors.END, len(existing_sessions)))
+        lines = [l for l in open('data.txt').readlines() if l.strip()]
+        print(f'[+] {Colors.GREEN}NOTPIXEL_AUTOSTART=1{Colors.END} - starting mine+claim with {len(lines)} account(s)')
         multithread_starter()
-        # keep main thread alive so worker threads don't get killed
         while True:
             time.sleep(3600)
 
     while True:
-        option = input("[!] {}Enter 1{} For Adding Account and {}2 for start{} mine + claim: ".format(Colors.BLUE,Colors.END,Colors.BLUE,Colors.END))
+        option = input("[!] {}Enter 1{} to show instructions for adding accounts, {}2 for start{} mine + claim: ".format(Colors.BLUE,Colors.END,Colors.BLUE,Colors.END))
         if option == "1":
-            name = input("\nEnter Session name: ")
-            if not any(name in i for i in os.listdir("sessions/")):
-                client = TelegramClient("sessions/"+name,config.API_ID,config.API_HASH).start()
-                client.disconnect()
-                print("[+] Session {} {}saved success{}.".format(name,Colors.GREEN,Colors.END))
-            else:
-                print("[x] Session {} {}already exist{}.".format(name,Colors.RED,Colors.END))
+            print(f"\n{Colors.GREEN}To add accounts:{Colors.END}")
+            print(f"1. Open Telegram Desktop with DevTools enabled")
+            print(f"2. Open https://t.me/notpixel")
+            print(f"3. Extract tgWebAppData from the WebView")
+            print(f"4. Paste one init_data token per line in data.txt")
+            print(f"5. Then select option 2 to start\n")
         elif option == "2":
             print("{}Warning!{} Most airdrops utilize {}UTC detection to prevent cheating{}, which means they monitor your sleep patterns and the timing of your tasks. It's advisable to {}run your script when you're awake and to pause it before you go to sleep{}.".format(
                 Colors.YELLOW,Colors.END,Colors.YELLOW,Colors.END,Colors.YELLOW,Colors.END
             ))
             multithread_starter()
-            # keep main thread alive so worker threads don't get killed
             while True:
                 time.sleep(3600)

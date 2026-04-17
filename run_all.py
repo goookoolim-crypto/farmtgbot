@@ -1,14 +1,14 @@
 """Unified launcher for all 3 telegram farming services.
 
 Runs as a single Railway worker. Spawns:
-  - farmclickers   (Blum + Major via faxw3b/main-telegram-autoclickers, pyrogram sessions)
-  - notpixel       (aDarkDev/NotPixel, telethon sessions)
-  - tomarketod     (akasakaid/tomarketod, WebApp init_data tokens in data.txt)
+  - farmclickers   (Blum + Major, WebApp init_data tokens in data.txt)
+  - notpixel       (NotPixel, WebApp init_data tokens in data.txt)
+  - tomarketod     (Tomarket, WebApp init_data tokens in data.txt)
 
 Responsibilities:
   1. Validate required env vars (API_ID, API_HASH).
   2. Materialize farmclickers/.env from env vars (the upstream project reads a .env file, not the OS environment).
-  3. Link session/data files from a persistent /data volume (Railway) into each service dir, if /data exists.
+  3. Link data files from a persistent /data volume (Railway) into each service dir, if /data exists.
   4. Spawn each enabled service as a subprocess with prefixed, line-buffered logs.
   5. Auto-restart any crashed subprocess after a backoff.
   6. Forward SIGTERM/SIGINT to children for clean Railway shutdowns.
@@ -68,16 +68,12 @@ def fmt_uptime(seconds: float) -> str:
 # Startup self-diagnostic
 # ---------------------------------------------------------------------------
 
-SQLITE_MAGIC = b"SQLite format 3\x00"
-
-# Env vars we want visible in the startup banner (presence only, never values).
 _ENV_KEYS_SHOW_VALUE = {"ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
-                        "FARMCLICKERS_SESSION_NAME", "NOTPIXEL_SESSION_NAME",
                         "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME"}
 _ENV_KEYS_WATCH = [
     "API_ID", "API_HASH",
-    "FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME",
-    "NOTPIXEL_SESSION_B64", "NOTPIXEL_SESSION_NAME",
+    "FARMCLICKERS_DATA",
+    "NOTPIXEL_DATA",
     "TOMARKET_DATA",
     "ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
     "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME",
@@ -89,34 +85,12 @@ def describe_env_var(key: str, value: str) -> str:
         return "unset"
     if key in _ENV_KEYS_SHOW_VALUE:
         return f"SET = {value}"
-    if key.endswith("_B64"):
-        return f"SET ({len(value)} chars of base64)"
-    if key == "TOMARKET_DATA":
+    if key in ("FARMCLICKERS_DATA", "NOTPIXEL_DATA", "TOMARKET_DATA"):
         nlines = len([l for l in value.splitlines() if l.strip()])
         return f"SET ({nlines} non-empty line(s), {len(value)} chars total)"
     if key == "API_ID":
         return f"SET = {value}"
-    # API_HASH etc - show presence + length only.
     return f"SET ({len(value)} chars)"
-
-
-def inspect_session_file(path: Path) -> str:
-    """Return a short human description of a .session file's validity."""
-    try:
-        size = path.stat().st_size
-    except OSError as e:
-        return f"stat error: {e}"
-    if size == 0:
-        return "0 bytes (EMPTY)"
-    try:
-        with open(path, "rb") as f:
-            header = f.read(16)
-    except OSError as e:
-        return f"{size} bytes, read error: {e}"
-    if header.startswith(SQLITE_MAGIC):
-        return f"{size} bytes, SQLite OK"
-    # Pyrogram <2 used pickle-style sessions; telethon always uses SQLite.
-    return f"{size} bytes, UNKNOWN FORMAT (header={header!r})"
 
 
 def startup_diagnostic() -> None:
@@ -134,37 +108,23 @@ def startup_diagnostic() -> None:
 
 
 def session_inventory() -> None:
-    """Print the state of each service's on-disk session/data files.
+    """Print the state of each service's on-disk data files."""
+    log("launcher", "Data file inventory:")
 
-    Runs after materialize_farmclickers_env() + link_persistent_data() so it
-    shows the final state the subprocesses will see.
-    """
-    log("launcher", "Session / data inventory:")
-
-    for svc_name, sessions_dir in [
-        ("farmclickers", SERVICES / "farmclickers" / "sessions"),
-        ("notpixel", SERVICES / "notpixel" / "sessions"),
+    for svc_name, data_path in [
+        ("farmclickers", SERVICES / "farmclickers" / "data.txt"),
+        ("notpixel", SERVICES / "notpixel" / "data.txt"),
+        ("tomarketod", SERVICES / "tomarketod" / "data.txt"),
     ]:
-        if not sessions_dir.exists():
-            log("launcher", f"  {svc_name}: sessions dir MISSING at {sessions_dir.relative_to(ROOT)}")
-            continue
-        session_files = sorted(sessions_dir.glob("*.session"))
-        if not session_files:
-            log("launcher", f"  {svc_name}: 0 session files in {sessions_dir.relative_to(ROOT)}")
-            continue
-        for s in session_files:
-            log("launcher", f"  {svc_name}: {s.name} \u2192 {inspect_session_file(s)}")
+        if data_path.exists():
+            try:
+                lines = [l for l in data_path.read_text().splitlines() if l.strip()]
+                log("launcher", f"  {svc_name}: data.txt has {len(lines)} non-empty line(s)")
+            except OSError as e:
+                log("launcher", f"  {svc_name}: data.txt read error: {e}")
+        else:
+            log("launcher", f"  {svc_name}: data.txt MISSING")
 
-    # tomarketod: data.txt lines + tokens.json existence
-    data_txt = SERVICES / "tomarketod" / "data.txt"
-    if data_txt.exists():
-        try:
-            lines = [l for l in data_txt.read_text().splitlines() if l.strip()]
-            log("launcher", f"  tomarketod: data.txt has {len(lines)} non-empty line(s)")
-        except OSError as e:
-            log("launcher", f"  tomarketod: data.txt read error: {e}")
-    else:
-        log("launcher", "  tomarketod: data.txt MISSING")
     tokens_json = SERVICES / "tomarketod" / "tokens.json"
     if tokens_json.exists():
         log("launcher", f"  tomarketod: tokens.json present ({tokens_json.stat().st_size} bytes)")
@@ -276,82 +236,50 @@ def materialize_farmclickers_env(api_id: str, api_hash: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Materialize session/data files from env vars.
+# Materialize data files from env vars.
 #
-# Railway has no built-in way to copy files into a container. Instead we
-# base64-encode the .session files locally and set them as env vars. Sessions
-# are ~28 KB each; base64 pushes that to ~37 KB; Railway's per-var limit is
-# 64 KB so we fit comfortably.
+# All three services now use plain-text init_data tokens in data.txt files.
+# Env vars contain init_data lines (one per account, newline-separated).
 #
 # Expected env vars (all optional - missing ones just skip that service):
-#   FARMCLICKERS_SESSION_B64   base64 of pyrogram .session file
-#   FARMCLICKERS_SESSION_NAME  filename stem, default "newone"
-#   NOTPIXEL_SESSION_B64       base64 of telethon .session file
-#   NOTPIXEL_SESSION_NAME      filename stem, default "newone"
-#   TOMARKET_DATA              raw init_data token (one line per account, \n-separated)
+#   FARMCLICKERS_DATA          raw init_data tokens (one line per account)
+#   NOTPIXEL_DATA              raw init_data tokens (one line per account)
+#   TOMARKET_DATA              raw init_data tokens (one line per account)
 #
 # Fallback: if a /data volume is mounted, we symlink from there instead
 # (kept for users who prefer volumes over env vars).
 # ---------------------------------------------------------------------------
 
-def materialize_sessions_from_env() -> None:
-    import base64
-    import gzip
-
+def materialize_data_from_env() -> None:
     entries = [
-        ("FARMCLICKERS_SESSION_B64", "FARMCLICKERS_SESSION_NAME", SERVICES / "farmclickers" / "sessions", "newone", ".session"),
-        ("NOTPIXEL_SESSION_B64",     "NOTPIXEL_SESSION_NAME",     SERVICES / "notpixel"     / "sessions", "newone", ".session"),
+        ("FARMCLICKERS_DATA", SERVICES / "farmclickers" / "data.txt"),
+        ("NOTPIXEL_DATA",     SERVICES / "notpixel"     / "data.txt"),
+        ("TOMARKET_DATA",     SERVICES / "tomarketod"   / "data.txt"),
     ]
-    for env_b64, env_name, dest_dir, default_name, ext in entries:
-        blob = os.environ.get(env_b64, "").strip()
-        if not blob:
+    for env_key, target in entries:
+        data = os.environ.get(env_key, "").strip()
+        if not data:
             continue
-        name = (os.environ.get(env_name, "") or default_name).strip()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        target = dest_dir / f"{name}{ext}"
-        if target.exists():
-            log("launcher", f"  {target.relative_to(ROOT)} already exists - not overwriting from env")
-            continue
-        try:
-            raw = base64.b64decode(blob)
-        except Exception as e:
-            log("launcher", f"  FAILED to base64-decode {env_b64}: {e}")
-            continue
-        # Try gzip first (the format we generate locally). Fall back to raw bytes for backward compat.
-        try:
-            data = gzip.decompress(raw)
-            source = "gzip+b64"
-        except OSError:
-            data = raw
-            source = "b64 (uncompressed)"
-        target.write_bytes(data)
-        log("launcher", f"  wrote {target.relative_to(ROOT)} ({len(data)} bytes) from {env_b64} [{source}]")
-
-    # Tomarket token is plain text, can contain multiple lines for multiple accounts.
-    tomarket_data = os.environ.get("TOMARKET_DATA", "").strip()
-    if tomarket_data:
-        target = SERVICES / "tomarketod" / "data.txt"
         if target.exists() and target.read_text().strip():
-            log("launcher", f"  {target.relative_to(ROOT)} already populated - not overwriting from TOMARKET_DATA")
+            log("launcher", f"  {target.relative_to(ROOT)} already populated - not overwriting from {env_key}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(tomarket_data + "\n")
-            log("launcher", f"  wrote {target.relative_to(ROOT)} from TOMARKET_DATA ({len(tomarket_data.splitlines()) or 1} line(s))")
+            target.write_text(data + "\n")
+            nlines = len([l for l in data.splitlines() if l.strip()])
+            log("launcher", f"  wrote {target.relative_to(ROOT)} from {env_key} ({nlines} line(s))")
 
 
 def link_persistent_data() -> None:
-    # Primary path: env vars (see materialize_sessions_from_env).
-    materialize_sessions_from_env()
+    materialize_data_from_env()
 
-    # Optional fallback: /data volume symlinks.
     if not DATA_VOLUME.exists():
         return
     log("launcher", f"Persistent volume found at {DATA_VOLUME}")
 
     mappings = [
-        (DATA_VOLUME / "farmclickers" / "sessions", SERVICES / "farmclickers" / "sessions"),
-        (DATA_VOLUME / "notpixel" / "sessions", SERVICES / "notpixel" / "sessions"),
-        (DATA_VOLUME / "tomarketod" / "data.txt", SERVICES / "tomarketod" / "data.txt"),
+        (DATA_VOLUME / "farmclickers" / "data.txt", SERVICES / "farmclickers" / "data.txt"),
+        (DATA_VOLUME / "notpixel" / "data.txt",     SERVICES / "notpixel" / "data.txt"),
+        (DATA_VOLUME / "tomarketod" / "data.txt",   SERVICES / "tomarketod" / "data.txt"),
         (DATA_VOLUME / "tomarketod" / "proxies.txt", SERVICES / "tomarketod" / "proxies.txt"),
         (DATA_VOLUME / "tomarketod" / "tokens.json", SERVICES / "tomarketod" / "tokens.json"),
     ]
@@ -376,7 +304,7 @@ def link_persistent_data() -> None:
 # ---------------------------------------------------------------------------
 
 class Service:
-    CRASH_TAIL_LINES = 15  # how many recent lines to replay on crash
+    CRASH_TAIL_LINES = 15
 
     def __init__(self, tag: str, cwd: Path, cmd: list[str], extra_env: dict[str, str] | None = None):
         self.tag = tag
@@ -385,7 +313,6 @@ class Service:
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
         self.stop_requested = False
-        # Lifecycle tracking (read by heartbeat thread).
         self.run_started_at: float | None = None
         self.last_exit_at: float | None = None
         self.last_exit_rc: int | None = None
@@ -407,7 +334,6 @@ class Service:
         while not self.stop_requested:
             env = os.environ.copy()
             env.update(self.extra_env)
-            # Disable python output buffering so logs stream line-by-line.
             env.setdefault("PYTHONUNBUFFERED", "1")
             attempt_label = "starting" if self.restart_count == 0 else f"restart #{self.restart_count}"
             log(self.tag, f"{attempt_label}: {' '.join(self.cmd)} (cwd={self.cwd.relative_to(ROOT)})")
@@ -477,7 +403,6 @@ def build_services() -> list[Service]:
         services.append(Service(
             tag="farmclickers",
             cwd=SERVICES / "farmclickers",
-            # action 2 = launch software (non-interactive via -a flag)
             cmd=["python3.11", "main.py", "-a", "2"],
         ))
 
@@ -493,7 +418,6 @@ def build_services() -> list[Service]:
         services.append(Service(
             tag="tomarketod",
             cwd=SERVICES / "tomarketod",
-            # --marinkitagawa suppresses the clear-screen on start (safe for non-tty)
             cmd=["python3.11", "bot.py", "--marinkitagawa"],
         ))
 
@@ -505,7 +429,6 @@ def build_services() -> list[Service]:
 # ---------------------------------------------------------------------------
 
 def heartbeat_loop(services: list[Service], stop_event: threading.Event) -> None:
-    """Periodically print per-service status. Helps spot silent stalls."""
     if HEARTBEAT_INTERVAL_SEC <= 0:
         return
     while not stop_event.wait(HEARTBEAT_INTERVAL_SEC):

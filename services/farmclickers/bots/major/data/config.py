@@ -20,9 +20,6 @@ ACC_DELAY = global_settings.ACC_DELAY
 # тип прокси
 PROXY_TYPE = global_settings.PROXY_TYPE # http/socks5
 
-# папка с сессиями (не менять)
-WORKDIR = "sessions/"
-
 # использование прокси
 USE_PROXY = global_settings.USE_PROXY # True/False
 

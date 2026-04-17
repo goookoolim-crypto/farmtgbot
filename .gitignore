@@ -1,21 +1,23 @@
-# --- secrets & sessions (NEVER commit) ---
+# --- secrets & data (NEVER commit) ---
 .env
 *.env
 !*.env.example
 !.env-example
 
-# Pyrogram / Telethon session DBs (full account access!)
-*.session
-*.session-journal
-**/sessions/
-**/sessions-backup/
-
-# Tomarketod user data
+# WebApp init_data files
+services/farmclickers/data.txt
+services/notpixel/data.txt
 services/tomarketod/data.txt
 services/tomarketod/proxies.txt
 services/tomarketod/tokens.json
 services/farmclickers/proxies.txt
 services/farmclickers/proxy.txt
+
+# Legacy session files (no longer used but keep ignore)
+*.session
+*.session-journal
+**/sessions/
+**/sessions-backup/
 
 # --- python ---
 __pycache__/

@@ -1,38 +1,27 @@
-from pyrogram.raw.functions.messages import RequestWebView
-from urllib.parse import unquote
+from urllib.parse import unquote, parse_qs
 from utils.core import logger
 from fake_useragent import UserAgent
-from pyrogram import Client
-from pyrogram.raw import functions
 from data import config
 import ssl, certifi
-from aiohttp_socks import ProxyConnector
+import json
 
 import aiohttp
 import asyncio
 import random
 
 class Blum:
-    def __init__(self, thread: int, account: str, proxy : str):
+    def __init__(self, thread: int, init_data: str):
         self.thread = thread
-        self.name = account
-        if proxy:
-            proxy_client = {
-                "scheme": config.PROXY_TYPE,
-                "hostname": proxy.split(':')[0],
-                "port": int(proxy.split(':')[1]),
-                "username": proxy.split(':')[2],
-                "password": proxy.split(':')[3],
-            }
-            self.client = Client(name=account, api_id=config.API_ID, api_hash=config.API_HASH, workdir=config.WORKDIR, proxy=proxy_client)
-        else:
-            self.client = Client(name=account, api_id=config.API_ID, api_hash=config.API_HASH, workdir=config.WORKDIR)
-                
-        if proxy:
-            self.proxy = f"{config.PROXY_TYPE}://{proxy.split(':')[2]}:{proxy.split(':')[3]}@{proxy.split(':')[0]}:{proxy.split(':')[1]}"
-        else:
-            self.proxy = None
-            
+        self.init_data = init_data
+
+        try:
+            parsed = {k: v[0] for k, v in parse_qs(init_data).items()}
+            user_info = json.loads(parsed.get('user', '{}'))
+            self.name = user_info.get('first_name', f'account_{thread}')
+        except Exception:
+            self.name = f'account_{thread}'
+
+        self.proxy = None
         self.auth_token = ""
         self.ref_token=""
         headers = {
@@ -47,7 +36,7 @@ class Blum:
             'sec-fetch-site': 'same-site',
             'user-agent': UserAgent(os='android').random}
         sslcontext = ssl.create_default_context(cafile=certifi.where())
-        connector = ProxyConnector.from_url(self.proxy, ssl=sslcontext) if self.proxy else aiohttp.TCPConnector(ssl=sslcontext)
+        connector = aiohttp.TCPConnector(ssl=sslcontext)
         self.session = aiohttp.ClientSession(headers=headers, trust_env=True, connector=connector)
         self.error_cnt = 0
 
@@ -154,10 +143,7 @@ class Blum:
 
     async def login(self):
         try:
-            tg_web_data = await self.get_tg_web_data()
-            if tg_web_data == False:
-                return False
-            json_data = {"query": tg_web_data}
+            json_data = {"query": self.init_data}
             resp = await self.session.post("https://user-domain.blum.codes/api/v1/auth/provider/PROVIDER_TELEGRAM_MINI_APP", json=json_data)
             resp = await resp.json()
             self.ref_token = resp.get("token").get("refresh")
@@ -169,40 +155,6 @@ class Blum:
                 return True
             return False
 
-
-    async def get_tg_web_data(self):
-        await self.client.connect()
-        try:
-            messages = await self.client.get_chat_history_count(chat_id='@BlumCryptoBot')
-            if not messages:
-                peer = await self.client.resolve_peer('BlumCryptoBot')
-                await self.client.invoke(
-                    functions.messages.StartBot(
-                        bot=peer,
-                        peer=peer,
-                        start_param=config.REF_CODE,
-                        random_id=random.randint(1, 9999999),
-                    )
-                )
-            web_view = await self.client.invoke(RequestWebView(
-                peer=await self.client.resolve_peer('BlumCryptoBot'),
-                bot=await self.client.resolve_peer('BlumCryptoBot'),
-                platform='android',
-                from_bot_menu=False,
-                url='https://telegram.blum.codes/',
-                start_param=config.REF_CODE
-            ))
-
-            auth_url = web_view.url
-        except Exception as err:
-            logger.error(f"main | Thread {self.thread} | {self.name} | {err}")
-            if 'USER_DEACTIVATED_BAN' in str(err):
-                logger.error(f"login | Thread {self.thread} | {self.name} | USER BANNED")
-                await self.client.disconnect()
-                return False
-        await self.client.disconnect()
-        return unquote(string=unquote(string=auth_url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]))
-    
     async def get_referral_info(self):
         try:
             resp = await self.session.get("https://user-domain.blum.codes/api/v1/friends/balance")
@@ -346,4 +298,3 @@ class Blum:
                 await self.refresh()
                 return False
         return True if txt == 'OK' else txt
-

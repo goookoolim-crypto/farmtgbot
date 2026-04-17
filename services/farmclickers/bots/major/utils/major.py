@@ -1,45 +1,35 @@
-from urllib.parse import unquote
+from urllib.parse import unquote, parse_qs
 from utils.core import logger
 from fake_useragent import UserAgent
-from pyrogram import Client
 from data import config
 import ssl, certifi
-from pyrogram.raw import functions
-
-from aiohttp_socks import ProxyConnector
-from pyrogram.raw.functions.messages import RequestAppWebView
-from pyrogram.raw.types import InputBotAppShortName
+import json
 
 import aiohttp
 import asyncio
 import random
 
 class Major:
-    def __init__(self, thread: int, account: str, proxy: str):
+    def __init__(self, thread: int, init_data: str):
         self.thread = thread
-        self.name = account
+        self.init_data = init_data
         self.ref = config.REF_CODE
         self.error_cnt = 0
-        if proxy:
-            proxy_client = {
-                "scheme": config.PROXY_TYPE,
-                "hostname": proxy.split(':')[0],
-                "port": int(proxy.split(':')[1]),
-                "username": proxy.split(':')[2],
-                "password": proxy.split(':')[3],
-            }
-            self.client = Client(name=account, api_id=config.API_ID, api_hash=config.API_HASH, workdir=config.WORKDIR, proxy=proxy_client)
-        else:
-            self.client = Client(name=account, api_id=config.API_ID, api_hash=config.API_HASH, workdir=config.WORKDIR)
 
-        if proxy:
-            self.proxy = f"{config.PROXY_TYPE}://{proxy.split(':')[2]}:{proxy.split(':')[3]}@{proxy.split(':')[0]}:{proxy.split(':')[1]}"
-        else:
-            self.proxy = None
+        try:
+            parsed = {k: v[0] for k, v in parse_qs(init_data).items()}
+            user_info = json.loads(parsed.get('user', '{}'))
+            self.name = user_info.get('first_name', f'account_{thread}')
+            self.user_id = user_info.get('id')
+        except Exception:
+            self.name = f'account_{thread}'
+            self.user_id = None
+
+        self.proxy = None
 
     async def create_session(self):
         sslcontext = ssl.create_default_context(cafile=certifi.where())
-        connector = ProxyConnector().from_url(self.proxy, ssl=sslcontext) if self.proxy else aiohttp.TCPConnector(ssl=sslcontext)
+        connector = aiohttp.TCPConnector(ssl=sslcontext)
 
         headers = {
             'accept': 'application/json, text/plain, */*',
@@ -84,8 +74,6 @@ class Major:
                             if task['id'] == 27:
                                 subscribe = False
                         if not subscribe:
-                            async with self.client:
-                                ans = await self.client.join_chat('starsmajor')
                             await self.do_task(task_id=27)
                         await self.join_squad()
                     await asyncio.sleep(random.uniform(*config.MINI_SLEEP))
@@ -233,7 +221,7 @@ class Major:
         return await resp.json()
 
     async def user(self):
-        resp = await self.session.get(f"https://major.bot/api/users/{self.user_info.id}/")
+        resp = await self.session.get(f"https://major.bot/api/users/{self.user_id}/")
         return await resp.json()
 
     async def join_squad(self):
@@ -245,10 +233,7 @@ class Major:
 
     async def login(self):
         try:
-            tg_web_data = await self.get_tg_web_data()
-            if tg_web_data is False:
-                return False
-            json_data = {"init_data": tg_web_data}
+            json_data = {"init_data": self.init_data}
             resp = await self.session.post("https://major.bot/api/auth/tg/", json=json_data)
             resp = await resp.json()
             self.session.headers['authorization'] = f"Bearer {resp['access_token']}"
@@ -256,35 +241,3 @@ class Major:
         except Exception as err:
             logger.error(f"login | Thread {self.thread} | {self.name} | {err}")
             return False
-
-    async def get_tg_web_data(self):
-        async with self.client:
-            try:
-                messages = await self.client.get_chat_history_count(chat_id='@major')
-                if not messages:
-                    peer = await self.client.resolve_peer('major')
-                    await self.client.invoke(
-                        functions.messages.StartBot(
-                            bot=peer,
-                            peer=peer,
-                            start_param=config.REF_CODE,
-                            random_id=random.randint(1, 9999999),
-                    ))
-                web_view = await self.client.invoke(
-                    RequestAppWebView(
-                        peer=await self.client.resolve_peer('major'),
-                        app=InputBotAppShortName(
-                            bot_id=await self.client.resolve_peer('major'), short_name="start"
-                        ),
-                        platform='android',
-                        write_allowed=True,
-                        start_param=self.ref,
-                ))
-
-                auth_url = web_view.url
-
-                self.user_info = await self.client.get_me()
-                return unquote(string=auth_url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0])
-            except Exception as err:
-                logger.error(f"get_tg_web_data | Thread {self.thread} | {self.name} | {err}")
-                return False

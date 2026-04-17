@@ -1,21 +1,23 @@
 import asyncio
 import os
+import shutil
 from random import randint
 from pathlib import Path
-from shutil import copytree, rmtree
 
 from global_settings import global_settings
 from utils.logger import logger
 
 async def update_data():
     try:
-        logger.info('[SOFT] | update_data | Updating sessions...')
-        for path in global_settings.FIRST_PATHS + global_settings.SECOND_PATHS:
-            sessions_path = Path(f'bots/{path}/sessions')
-            if sessions_path.exists():
-                rmtree(sessions_path)
-            copytree('sessions', sessions_path)
-        logger.info('[SOFT] | update_data | Sessions successfully updated')
+        logger.info('[SOFT] | update_data | Updating data files...')
+        data_src = Path('data.txt')
+        if data_src.exists():
+            for path in global_settings.FIRST_PATHS + global_settings.SECOND_PATHS:
+                data_dst = Path(f'bots/{path}/data.txt')
+                shutil.copy2(data_src, data_dst)
+            logger.info('[SOFT] | update_data | Data files successfully updated')
+        else:
+            logger.warning('[SOFT] | update_data | data.txt not found, skipping data sync')
 
         logger.info('[SOFT] | update_data | Updating proxies...')
         all_proxies = ""
@@ -46,11 +48,13 @@ async def update_data():
         return False
 
 async def run_soft(cur_idx):
-    session_path = Path('sessions')
-    session_files = session_path.glob('*.session')
-    session_names = [file.stem for file in session_files]
-    if (len(session_names) == 0):
-        print("Create sessions!")
+    data_file = Path('data.txt')
+    if not data_file.exists():
+        print("data.txt not found! Add init_data tokens to data.txt first.")
+        return
+    lines = [l.strip() for l in data_file.read_text().splitlines() if l.strip()]
+    if len(lines) == 0:
+        print("No accounts in data.txt! Add init_data tokens first.")
         return
 
     ok = await update_data()
