@@ -16,5 +16,12 @@ urllib3>=1.26.12
 # --- tomarketod ---
 colorama>=0.4.6
 
+# --- majorbot (Pyrogram + aiohttp stack) ---
+Pyrogram==2.0.106
+aiohttp-proxy==0.1.2
+PySocks==1.7.1
+better-proxy==1.1.5
+TgCrypto==1.2.5
+
 # --- shared ---
 certifi
