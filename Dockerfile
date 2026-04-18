@@ -20,6 +20,7 @@ COPY run_all.py ./
 COPY services ./services
 
 RUN mkdir -p services/farmclickers \
+             services/majorbot/sessions \
              services/notpixel \
              services/tomarketod \
  && touch services/farmclickers/data.txt \

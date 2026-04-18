@@ -1,7 +1,8 @@
-"""Unified launcher for all 3 telegram farming services.
+"""Unified launcher for all telegram farming services.
 
 Runs as a single Railway worker. Spawns:
-  - farmclickers   (Blum + Major, WebApp init_data tokens in data.txt)
+  - farmclickers   (Yescoin/DotCoin/Cats, WebApp init_data tokens in data.txt)
+  - majorbot       (Major, Pyrogram session-based)
   - notpixel       (NotPixel, WebApp init_data tokens in data.txt)
   - tomarketod     (Tomarket, WebApp init_data tokens in data.txt)
 
@@ -15,6 +16,7 @@ Responsibilities:
 
 Enable/disable a service with env flags:
   ENABLE_FARMCLICKERS=1   (default 1)
+  ENABLE_MAJORBOT=1       (default 1)
   ENABLE_NOTPIXEL=1       (default 1)
   ENABLE_TOMARKETOD=1     (default 1)
 """
@@ -41,6 +43,7 @@ HEARTBEAT_INTERVAL_SEC = int(os.environ.get("HEARTBEAT_INTERVAL_SEC", "600"))
 
 COLORS = {
     "farmclickers": "\033[36m",  # cyan
+    "majorbot": "\033[34m",      # blue
     "notpixel": "\033[35m",      # magenta
     "tomarketod": "\033[33m",    # yellow
     "launcher": "\033[32m",      # green
@@ -70,13 +73,15 @@ def fmt_uptime(seconds: float) -> str:
 # Startup self-diagnostic
 # ---------------------------------------------------------------------------
 
-_ENV_KEYS_SHOW_VALUE = {"ENABLE_FARMCLICKERS", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
+_ENV_KEYS_SHOW_VALUE = {"ENABLE_FARMCLICKERS", "ENABLE_MAJORBOT", "ENABLE_NOTPIXEL", "ENABLE_TOMARKETOD",
                         "HEARTBEAT_INTERVAL_SEC", "DATA_VOLUME",
-                        "FARMCLICKERS_SESSION_NAME", "NOTPIXEL_SESSION_NAME"}
+                        "FARMCLICKERS_SESSION_NAME", "MAJORBOT_SESSION_NAME", "NOTPIXEL_SESSION_NAME"}
 _ENV_KEYS_WATCH = [
     "API_ID", "API_HASH",
     "FARMCLICKERS_DATA",
     "FARMCLICKERS_SESSION_NAME", "FARMCLICKERS_SESSION_B64",
+    "MAJORBOT_SESSION_NAME", "MAJORBOT_SESSION_B64",
+    "ENABLE_MAJORBOT",
     "NOTPIXEL_DATA",
     "NOTPIXEL_SESSION_NAME", "NOTPIXEL_SESSION_B64",
     "TOMARKET_DATA",
@@ -139,6 +144,7 @@ def session_inventory() -> None:
     for svc_name, sessions_dir in [
         ("farmclickers", SERVICES / "farmclickers" / "sessions"),
         ("notpixel", SERVICES / "notpixel" / "sessions"),
+        ("majorbot", SERVICES / "majorbot" / "sessions"),
     ]:
         if sessions_dir.exists():
             session_files = list(sessions_dir.glob("*.session"))
@@ -191,7 +197,7 @@ BOT_TOKEN = ''
 
 BOTS_DATA= '{{
     "blum" : {{
-        "is_connected": true,
+        "is_connected": false,
         "ref_code": "ref_qIFL0xYd8i",
         "errors_before_stop": 2,
         "spend_diamonds": true,
@@ -201,7 +207,7 @@ BOTS_DATA= '{{
         "do_tasks": true
     }},
     "major" : {{
-        "is_connected": true,
+        "is_connected": false,
         "ref_code": "6046075760",
         "errors_before_stop": 2,
         "play_hold_coin": true,
@@ -252,6 +258,29 @@ def materialize_farmclickers_env(api_id: str, api_hash: str) -> None:
     log("launcher", f"Wrote {target.relative_to(ROOT)}")
 
 
+MAJORBOT_ENV_TEMPLATE = """\
+API_ID={api_id}
+API_HASH={api_hash}
+
+REF_ID=339631649
+SQUAD_ID=2237841784
+TASKS_WITH_JOIN_CHANNEL=False
+HOLD_COIN=[585, 600]
+SWIPE_COIN=[2000, 3000]
+USE_RANDOM_DELAY_IN_RUN=True
+RANDOM_DELAY_IN_RUN=[0, 15]
+FAKE_USERAGENT=True
+SLEEP_TIME=[1800, 3600]
+USE_PROXY_FROM_FILE=False
+"""
+
+
+def materialize_majorbot_env(api_id: str, api_hash: str) -> None:
+    target = SERVICES / "majorbot" / ".env"
+    target.write_text(MAJORBOT_ENV_TEMPLATE.format(api_id=api_id, api_hash=api_hash))
+    log("launcher", f"Wrote {target.relative_to(ROOT)}")
+
+
 # ---------------------------------------------------------------------------
 # Materialize data files from env vars.
 #
@@ -291,6 +320,7 @@ def materialize_sessions_from_env() -> None:
     session_mappings = [
         ("FARMCLICKERS", SERVICES / "farmclickers" / "sessions"),
         ("NOTPIXEL",     SERVICES / "notpixel"     / "sessions"),
+        ("MAJORBOT",     SERVICES / "majorbot"     / "sessions"),
     ]
     for prefix, sessions_dir in session_mappings:
         name = os.environ.get(f"{prefix}_SESSION_NAME", "").strip()
@@ -456,6 +486,18 @@ def build_services() -> list[Service]:
         else:
             log("launcher", "farmclickers: SKIPPED - data.txt empty/missing. Set FARMCLICKERS_DATA env var with init_data tokens (one per line) and redeploy.")
 
+    if os.environ.get("ENABLE_MAJORBOT", "1") == "1":
+        sessions_dir = SERVICES / "majorbot" / "sessions"
+        session_files = list(sessions_dir.glob("*.session")) if sessions_dir.exists() else []
+        if session_files:
+            services.append(Service(
+                tag="majorbot",
+                cwd=SERVICES / "majorbot",
+                cmd=["python3.11", "main.py", "-a", "1"],
+            ))
+        else:
+            log("launcher", "majorbot: SKIPPED - no .session files found. Set MAJORBOT_SESSION_NAME and MAJORBOT_SESSION_B64 env vars and redeploy.")
+
     if os.environ.get("ENABLE_NOTPIXEL", "1") == "1":
         data_path = SERVICES / "notpixel" / "data.txt"
         if _data_nonempty(data_path):
@@ -501,12 +543,13 @@ def main() -> int:
     log("launcher", "farmtgbot: unified multi-bot Railway worker starting")
     api_id, api_hash = require_env()
     materialize_farmclickers_env(api_id, api_hash)
+    materialize_majorbot_env(api_id, api_hash)
     link_persistent_data()
     session_inventory()
 
     services = build_services()
     if not services:
-        log("launcher", "FATAL: no services to run. Either all ENABLE_* flags are 0, or every enabled service has an empty data.txt. Set at least one of FARMCLICKERS_DATA / NOTPIXEL_DATA / TOMARKET_DATA with init_data tokens and redeploy.")
+        log("launcher", "FATAL: no services to run. Either all ENABLE_* flags are 0, or every enabled service has an empty data file/session. Set at least one of FARMCLICKERS_DATA / MAJORBOT_SESSION_B64 / NOTPIXEL_DATA / TOMARKET_DATA and redeploy.")
         return 1
     log("launcher", f"enabled services: {[s.tag for s in services]}")
     log("launcher", f"heartbeat interval: {HEARTBEAT_INTERVAL_SEC}s (set HEARTBEAT_INTERVAL_SEC=0 to disable)")
